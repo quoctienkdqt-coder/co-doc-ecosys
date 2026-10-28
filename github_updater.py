@@ -45,7 +45,7 @@ def get_local_version_info() -> Dict[str, Any]:
         "author": "Ngô Quốc Tiến",
         "contact": "Zalo: 0905387808",
         "ai_disclaimer": "AI chỉ mang tính tham khảo, mọi quyết định và kết quả đều do con người.",
-        "github_repo": "https://github.com/ngoquoctien/co-doc-ecosys",
+        "github_repo": "https://github.com/quoctienkdqt-coder/co-doc-ecosys",
         "release_date": "28/10/2026"
     }
 
@@ -309,7 +309,7 @@ class GitHubUpdateDialog(QDialog):
         rc_layout.setSpacing(10)
 
         rc_layout.addWidget(QLabel("<b>Kho GitHub:</b>"))
-        self.txt_repo = QLineEdit(self.local_info.get("github_repo", "https://github.com/ngoquoctien/co-doc-ecosys"))
+        self.txt_repo = QLineEdit(self.local_info.get("github_repo", "https://github.com/quoctienkdqt-coder/co-doc-ecosys"))
         self.txt_repo.setPlaceholderText("Nhập link repository GitHub...")
         rc_layout.addWidget(self.txt_repo)
 
