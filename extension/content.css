@@ -1,0 +1,202 @@
+/* CSS cho Floating Widget trên trang co.moit.gov.vn */
+
+#ecosys-autofill-widget {
+  position: fixed;
+  top: 80px;
+  right: 20px;
+  width: 360px;
+  max-height: 85vh;
+  background: #ffffff;
+  border-radius: 12px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2), 0 0 0 1px rgba(0, 0, 0, 0.05);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  z-index: 999999;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  transition: transform 0.25s ease, opacity 0.25s ease;
+}
+
+#ecosys-autofill-widget.minimized {
+  width: auto;
+  height: auto;
+}
+
+#ecosys-autofill-widget.minimized .ecosys-widget-body {
+  display: none;
+}
+
+/* Header */
+.ecosys-widget-header {
+  background: linear-gradient(135deg, #1a73e8, #0d47a1);
+  color: #ffffff;
+  padding: 12px 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  cursor: grab;
+  user-select: none;
+}
+
+.ecosys-widget-title {
+  font-size: 13.5px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  letter-spacing: 0.3px;
+}
+
+.ecosys-widget-controls {
+  display: flex;
+  gap: 6px;
+}
+
+.ecosys-ctrl-btn {
+  background: rgba(255, 255, 255, 0.2);
+  border: none;
+  color: #ffffff;
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1;
+  transition: background 0.2s;
+}
+
+.ecosys-ctrl-btn:hover {
+  background: rgba(255, 255, 255, 0.35);
+}
+
+/* Body */
+.ecosys-widget-body {
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  overflow-y: auto;
+  max-height: calc(85vh - 50px);
+  background: #f8fafc;
+}
+
+/* Button groups */
+.ecosys-btn-primary {
+  background: #1a73e8;
+  color: #ffffff;
+  border: none;
+  padding: 10px 14px;
+  border-radius: 8px;
+  font-weight: 600;
+  font-size: 13px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  box-shadow: 0 2px 6px rgba(26, 115, 232, 0.3);
+  transition: all 0.2s;
+}
+
+.ecosys-btn-primary:hover {
+  background: #1557b0;
+  box-shadow: 0 4px 10px rgba(26, 115, 232, 0.4);
+}
+
+.ecosys-btn-secondary {
+  background: #ffffff;
+  color: #374151;
+  border: 1px solid #d1d5db;
+  padding: 8px 12px;
+  border-radius: 6px;
+  font-weight: 500;
+  font-size: 12px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  transition: background 0.2s;
+}
+
+.ecosys-btn-secondary:hover {
+  background: #f3f4f6;
+  border-color: #9ca3af;
+}
+
+.ecosys-grid-btns {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+/* Textarea / Data input */
+.ecosys-textarea {
+  width: 100%;
+  box-sizing: border-box;
+  height: 90px;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  padding: 8px;
+  font-family: Consolas, monospace;
+  font-size: 11px;
+  resize: vertical;
+  background: #ffffff;
+  color: #1f2937;
+}
+
+.ecosys-textarea:focus {
+  outline: none;
+  border-color: #1a73e8;
+  box-shadow: 0 0 0 2px rgba(26, 115, 232, 0.2);
+}
+
+/* Info banner */
+.ecosys-info-banner {
+  background: #e8f0fe;
+  border-left: 3px solid #1a73e8;
+  padding: 8px 10px;
+  border-radius: 0 6px 6px 0;
+  font-size: 11.5px;
+  color: #174ea6;
+  line-height: 1.4;
+}
+
+/* Logs */
+.ecosys-logs-box {
+  background: #1e293b;
+  color: #e2e8f0;
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-family: Consolas, monospace;
+  font-size: 11px;
+  height: 120px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.ecosys-log-line {
+  line-height: 1.3;
+  word-break: break-word;
+}
+.ecosys-log-info { color: #60a5fa; }
+.ecosys-log-success { color: #4ade80; font-weight: bold; }
+.ecosys-log-warn { color: #fbbf24; }
+.ecosys-log-error { color: #f87171; font-weight: bold; }
+
+/* File input hidden */
+#ecosys-file-input {
+  display: none;
+}
+
+/* Bảo vệ hiển thị Ant Design Select: không bao giờ để lộ ký tự rác trong search input khi select không mở */
+.ant-select-single:not(.ant-select-open) .ant-select-selection-search-input {
+  opacity: 0 !important;
+  color: transparent !important;
+}
+

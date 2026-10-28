@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>eCoSys C/O AutoFill Pro</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="header">
+    <img src="icon48.png" alt="Logo" class="logo">
+    <div class="title-wrap">
+      <div class="title">eCoSys AutoFill Pro</div>
+      <div class="subtitle">Trợ lý Khai báo C/O Điện tử</div>
+    </div>
+  </div>
+
+  <div class="status-card" id="status-card">
+    <div class="status-dot" id="status-dot"></div>
+    <span id="status-text">Đang kiểm tra trang...</span>
+  </div>
+
+  <div class="actions">
+    <button class="btn btn-primary" id="btn-paste-fill">
+      📋 Dán từ Clipboard & Điền Ngay
+    </button>
+    <button class="btn btn-secondary" id="btn-toggle-widget">
+      📌 Bật / Ẩn Bảng trợ lý trên trang
+    </button>
+    <button class="btn btn-secondary" id="btn-demo">
+      🧪 Nạp thử dữ liệu mẫu (Demo)
+    </button>
+    <button class="btn btn-link" id="btn-open-site">
+      🌐 Mở trang KhaiBaoCO (Bộ Công Thương)
+    </button>
+  </div>
+
+  <div class="footer">
+    <span>Phiên bản 2.8.0 • Chuyên Gia Khai Báo eCoSys Siêu Tốc</span>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

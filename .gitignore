@@ -1,0 +1,38 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# PyInstaller & Build artifacts
+build/
+dist/
+*.spec.bak
+installer/app_bundle.zip
+temp_update.zip
+
+# Large binary files (Không đưa vào Git vì GitHub giới hạn 100MB, đưa vào mục Releases)
+*.exe
+*.zip
+*.rar
+*.mp4
+*.mp3
+
+# Local test & cache files
+backups_update/
+cache/
+debug_profile/
+
+# Personal configuration (API Key)
+settings.json
+
+# Environment
+venv/
+env/
+.env
+
+# OS generated files
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+.DS_Store

@@ -1,0 +1,16 @@
+{
+  "version": "3.1.0",
+  "app_name": "Hệ Thống Quản Trị Xuất Nhập Khẩu & Thủy Sản Toàn Diện (eCoSys C/O & Đối Chiếu SC)",
+  "author": "Ngô Quốc Tiến",
+  "contact": "Zalo: 0905387808",
+  "ai_disclaimer": "AI chỉ mang tính tham khảo, mọi quyết định và kết quả đều do con người.",
+  "github_repo": "https://github.com/ngoquoctien/co-doc-ecosys",
+  "release_date": "28/10/2026",
+  "changelog": [
+    "Khóa cứng và kích hoạt trực tiếp mô hình Google Gemini 3.8 Flash chính hãng (Tier 1).",
+    "Loại bỏ triệt để 2 cửa sổ thừa Base URL trên Windows taskbar.",
+    "Nâng cấp bảng hướng dẫn đặt tên chứng từ eCoSys sang dạng hộp thoại cuộn (Scrollable Dialog) chuẩn tỷ lệ màn hình.",
+    "Bổ sung khuyến cáo pháp lý về AI và thông tin bản quyền tác giả Ngô Quốc Tiến (Zalo: 0905387808).",
+    "Tích hợp tính năng Kiểm tra & Tự động cập nhật phần mềm qua GitHub."
+  ]
+}
