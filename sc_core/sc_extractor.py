@@ -1,4 +1,7 @@
 import os
+os.environ.setdefault("OMP_NUM_THREADS", "2")
+os.environ.setdefault("ONNXRUNTIME_NUM_THREADS", "2")
+import os
 import sys
 import json
 import re
@@ -106,9 +109,26 @@ def extract_sc_document(file_path, cache_dir="cache", progress_cb=None, use_ai=N
     if not os.path.exists(file_path):
         raise FileNotFoundError(f"Không tìm thấy file: {file_path}")
 
+    os.makedirs(cache_dir, exist_ok=True)
+    fhash = get_file_hash(file_path)
+    with open(file_path, 'rb') as _f64:
+        fhash_64k = hashlib.md5(_f64.read(65536)).hexdigest()
+
+    # Ưu tiên tuyệt đối kiểm tra bộ nhớ đệm AI (có đầy đủ dấu tiếng Việt)
+    for cand_ai_cache in [os.path.join(cache_dir, f"sc_ai_{fhash_64k}.json"), os.path.join(cache_dir, f"sc_ai_{fhash}.json")]:
+        if os.path.exists(cand_ai_cache):
+            try:
+                with open(cand_ai_cache, "r", encoding="utf-8") as f:
+                    cached_ai = json.load(f)
+                    if cached_ai.get("records"):
+                        if progress_cb: progress_cb(0.95, "Đang tải dữ liệu AI (có dấu) từ bộ nhớ đệm...")
+                        return cached_ai["sc_info"], cached_ai["records"]
+            except Exception:
+                pass
+
     # 1. Check AI mode configuration
     cfg = load_ai_config()
-    should_use_ai = use_ai if use_ai is not None else cfg.get("use_ai", False)
+    should_use_ai = True if use_ai is None else use_ai
     ai_provider = provider or cfg.get("provider", "apiz")
     if not api_key:
         if ai_provider == "apiz":
@@ -117,6 +137,17 @@ def extract_sc_document(file_path, cache_dir="cache", progress_cb=None, use_ai=N
             key = cfg.get("gemini_api_key")
         else:
             key = cfg.get("openai_api_key")
+        if not key:
+            try:
+                from app_config_manager import load_app_config
+                app_cfg = load_app_config()
+                key = app_cfg.get("api_key", "")
+                if app_cfg.get("api_source") == "apiz" or (key and key.startswith("sk-")):
+                    ai_provider = "apiz"
+                elif key:
+                    ai_provider = "gemini"
+            except Exception:
+                pass
     else:
         key = api_key
 
@@ -129,8 +160,6 @@ def extract_sc_document(file_path, cache_dir="cache", progress_cb=None, use_ai=N
             if progress_cb: progress_cb(0.1, err_msg)
 
     # 2. Local RapidOCR mode (Offline Fallback)
-    os.makedirs(cache_dir, exist_ok=True)
-    fhash = get_file_hash(file_path)
     cache_meta = os.path.join(cache_dir, f"sc_{fhash}.json")
     
     if os.path.exists(cache_meta):
@@ -159,6 +188,7 @@ def extract_sc_document(file_path, cache_dir="cache", progress_cb=None, use_ai=N
             for b in result:
                 boxes.append({'box': b[0], 'text': b[1], 'score': float(b[2])})
         all_pages_boxes.append(boxes)
+    doc.close()
 
     if progress_cb: progress_cb(0.75, "Đang phân tích cấu trúc bảng và trích xuất dữ liệu...")
 
@@ -252,24 +282,36 @@ def extract_sc_document(file_path, cache_dir="cache", progress_cb=None, use_ai=N
                     licence_texts.append(txt)
                 elif re.match(r'^(LHP|LD|LĐ|LRE|RE|RÊ|VAY|PS|GN)$', txt, re.IGNORECASE):
                     gear_texts.append(txt)
-                elif 360 <= x < 560:
-                    owner_texts.append(txt)
-                elif 560 <= x < 920:
-                    pass # length, phone, imo
-                elif 920 <= x < 1020:
-                    gear_texts.append(txt)
-                elif 1020 <= x < 1230:
+                elif 270 <= x < 490:
+                    # Cột 2: Họ và tên chủ tàu / thuyền trưởng
+                    clean_ow = re.sub(r'^(N/A|\d+|GPKT|LHP|TS)$', '', txt, flags=re.IGNORECASE).strip()
+                    if clean_ow and not re.match(r'^\d+([.,]\d+)?$', clean_ow) and any(c.isalpha() for c in clean_ow):
+                        owner_texts.append(clean_ow)
+                elif 490 <= x < 800:
+                    pass # Cột 3, 4, 5: Chiều dài, SĐT, IMO (N/A)
+                elif 800 <= x < 930:
+                    # Cột 6: Ngư cụ
+                    if re.match(r'^(LHP|LD|LĐ|LRE|RE|RÊ|VAY|PS|GN)$', txt, re.IGNORECASE):
+                        gear_texts.append(txt)
+                elif 930 <= x < 1100:
+                    # Cột 7: Số giấy phép KTTS
                     licence_texts.append(txt)
-                elif 1230 <= x < 1470:
+                elif 1100 <= x < 1300:
+                    # Cột 8: Vùng & thời gian khai thác
                     area_time_texts.append(txt)
-                elif 1470 <= x < 1680:
+                elif 1300 <= x < 1500:
+                    # Cột 9: Tên loài
                     species_texts.append(txt)
-                elif 1680 <= x < 1800:
-                    landing_date_texts.append(txt)
-                elif 1800 <= x < 1980:
-                    total_catch_texts.append(txt)
-                elif 1980 <= x < 2160:
+                elif 1500 <= x < 1650:
+                    # Cột 10: Ngày bốc dỡ thủy sản qua cảng
+                    if '/' in txt:
+                        landing_date_texts.append(txt)
+                elif 1650 <= x < 1780:
+                    # Cột 11: Khối lượng nguyên liệu mua từ tàu cá (req_catch_kg)
                     req_catch_texts.append(txt)
+                elif 1780 <= x < 1920:
+                    # Cột 12: Tổng khối lượng khai thác của tàu cá (total_catch_kg)
+                    total_catch_texts.append(txt)
                     
             owner = ' '.join(owner_texts).strip()
             gear = ' '.join(gear_texts).strip() or 'LHP'

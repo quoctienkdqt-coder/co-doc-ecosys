@@ -1,16 +1,20 @@
 {
-  "version": "3.1.0",
+  "version": "3.2.0",
   "app_name": "Hệ Thống Quản Trị Xuất Nhập Khẩu & Thủy Sản Toàn Diện (eCoSys C/O & Đối Chiếu SC)",
   "author": "Ngô Quốc Tiến",
   "contact": "Zalo: 0905387808",
   "ai_disclaimer": "AI chỉ mang tính tham khảo, mọi quyết định và kết quả đều do con người.",
   "github_repo": "https://github.com/quoctienkdqt-coder/co-doc-ecosys",
-  "release_date": "28/10/2026",
+  "release_date": "03/11/2026",
   "changelog": [
-    "Khóa cứng và kích hoạt trực tiếp mô hình Google Gemini 3.8 Flash chính hãng (Tier 1).",
-    "Loại bỏ triệt để 2 cửa sổ thừa Base URL trên Windows taskbar.",
-    "Nâng cấp bảng hướng dẫn đặt tên chứng từ eCoSys sang dạng hộp thoại cuộn (Scrollable Dialog) chuẩn tỷ lệ màn hình.",
-    "Bổ sung khuyến cáo pháp lý về AI và thông tin bản quyền tác giả Ngô Quốc Tiến (Zalo: 0905387808).",
-    "Tích hợp tính năng Kiểm tra & Tự động cập nhật phần mềm qua GitHub."
+    "Giao diện mới: bộ màu thống nhất, thẻ bo góc, menu trái thu/mở mượt (Ctrl+B), chuyển trang mờ dần, bảng cuộn mượt, hiển thị sắc nét ở màn hình 125–150%.",
+    "AI đọc hóa đơn VAT BẢN SCAN (kể cả file gộp nhiều trang): tự lọc trang hóa đơn (giấy hồng / từ khóa), bỏ qua giấy cam kết & bảng kê, có cache nên chạy lại không tốn API.",
+    "Tự nhận file hóa đơn PDF đặt lẻ (vd 'hoa don.pdf') khi lô hàng không có thư mục 'hoa don'.",
+    "Sửa lỗi đọc hóa đơn điện tử PDF bị bỏ qua toàn bộ (lỗi 'document closed').",
+    "Đọc được Bảng kê mẫu mới (bắt đầu cột A, không có cột Size) — dò cột theo dòng đánh số (1)…(14) của Thông tư; ngày năm 2 số 26/06/26 → 26/06/2026.",
+    "Đối chiếu Bảng kê ↔ Hóa đơn: tách đúng 2 nhà cung cấp trùng số hóa đơn; bảng kê không có Size thì ghép dòng hóa đơn theo đơn giá; so tên NCC không phân biệt 'Thuỷ/Thủy'.",
+    "Đối chiếu SC Excel ↔ SC scan PDF cho NHIỀU file SC Excel cùng lúc, chung 1 sheet có cột 'Số Giấy SC'; bảng thông tin chung mỗi SC 1 dòng.",
+    "Kiểm tra mới: ngày bốc dỡ phải sau (hoặc cùng) ngày kết thúc khai thác.",
+    "Cảnh báo rõ khi không đọc được Bảng kê / Hóa đơn thay vì im lặng thiếu kết quả."
   ]
 }

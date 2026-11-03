@@ -1,5 +1,6 @@
 import openpyxl
 import xlrd
+from datetime import datetime, date
 import datetime
 import re
 import os
@@ -23,20 +24,62 @@ def normalize_date_str(val):
     if hasattr(val, 'strftime'):
         return val.strftime("%d/%m/%Y")
     s = str(val).strip().replace("'", "").replace('"', '')
-    m = re.search(r'(\d{1,2})[/\-](\d{1,2})[/\-](\d{4})', s)
+    m = re.search(r'(\d{1,2})[/\-.](\d{1,2})[/\-.](\d{4})', s)
     if m:
         d, m, y = m.group(1), m.group(2), m.group(3)
         return f"{int(d):02d}/{int(m):02d}/{y}"
+    # Năm 2 chữ số (vd '26/06/26' -> '26/06/2026')
+    m = re.fullmatch(r'(\d{1,2})[/\-.](\d{1,2})[/\-.](\d{2})', s)
+    if m:
+        return f"{int(m.group(1)):02d}/{int(m.group(2)):02d}/20{m.group(3)}"
     return s
 
 def parse_num(val):
-    if val is None: return 0.0
+    """
+    Phân tích số thông minh: Hỗ trợ cả định dạng Quốc tế (1,250.50) và định dạng Việt Nam (1.250,50).
+    Tuyệt đối không làm mất số thập phân khi gặp dấu phẩy (như 1250,5 kg).
+    """
+    if val is None:
+        return 0.0
     if isinstance(val, (int, float)):
         return float(val)
-    s = str(val).replace(' ', '').replace(',', '')
+
+    s = str(val).strip().replace(" ", "").replace("'", "")
+    if not s:
+        return 0.0
+
+    # Nếu có cả dấu chấm và dấu phẩy
+    if "." in s and "," in s:
+        last_dot = s.rfind(".")
+        last_comma = s.rfind(",")
+        if last_comma > last_dot:
+            # Định dạng Việt Nam / Châu Âu: 1.250,50 -> bỏ chấm, đổi phẩy thành chấm
+            s = s.replace(".", "").replace(",", ".")
+        else:
+            # Định dạng Quốc tế: 1,250.50 -> bỏ phẩy
+            s = s.replace(",", "")
+    elif "," in s:
+        parts = s.split(",")
+        if len(parts) == 2 and len(parts[1]) in (1, 2, 4):
+            # Dấu phẩy thập phân (ví dụ 1250,5 hoặc 12,50) -> chuyển thành chấm
+            s = s.replace(",", ".")
+        elif len(parts) > 2:
+            # Phân tách hàng nghìn (ví dụ 1,000,000) -> bỏ phẩy
+            s = s.replace(",", "")
+        elif len(parts) == 2 and len(parts[1]) == 3 and parts[0] != "0":
+            # Dấu phẩy hàng nghìn (ví dụ 1,250) -> bỏ phẩy
+            s = s.replace(",", "")
+        else:
+            s = s.replace(",", ".")
+    elif "." in s:
+        parts = s.split(".")
+        if len(parts) > 2:
+            # Nhiều dấu chấm phân tách hàng nghìn (ví dụ 1.250.000) -> bỏ chấm
+            s = s.replace(".", "")
+
     try:
         return float(s)
-    except:
+    except Exception:
         return 0.0
 
 def open_excel_workbook(file_path):
@@ -340,3 +383,296 @@ def aggregate_and_validate_excel(records):
         r['validation_warnings'] = warnings
 
     return aggregated_records, aggregation_logs
+
+
+def _num_token(v):
+    """'-5' / '(12)' / -5 -> 5 ; còn lại -> None. (Số dương thuần không tính để tránh nhầm với dòng dữ liệu.)"""
+    if v is None:
+        return None
+    if isinstance(v, (int, float)):
+        return int(-v) if v < 0 and float(v).is_integer() and -v <= 20 else None
+    s = str(v).strip()
+    m = re.fullmatch(r'\(\s*(\d{1,2})\s*\)|-\s*(\d{1,2})', s)
+    if not m:
+        return None
+    return int(m.group(1) or m.group(2))
+
+
+def _next_value(ws, r, c, span=3):
+    """Giá trị đầu tiên khác rỗng trong `span` ô bên phải (ô nhãn và ô giá trị có thể cách nhau ô trống/gộp)."""
+    for cc in range(c + 1, min(c + span, ws.max_column) + 1):
+        v = ws.cell(r, cc).value
+        if v is not None and str(v).strip() != '':
+            return v
+    return None
+
+
+def _find_numbering_row(ws, max_scan=45):
+    """Tìm dòng đánh số cột (1)...(14) của Bảng kê. Trả về (số dòng, {số thứ tự cột: chỉ số cột Excel})."""
+    for r in range(1, min(max_scan, ws.max_row) + 1):
+        found = {}
+        for c in range(1, min(30, ws.max_column) + 1):
+            k = _num_token(ws.cell(r, c).value)
+            if k is not None and k not in found:
+                found[k] = c
+        needed = {1, 2, 3, 5, 6, 7, 10, 11, 12, 13}
+        if not needed.issubset(found):
+            continue
+        ks = sorted(k for k in found if k <= 14)
+        if all(found[a] < found[b] for a, b in zip(ks, ks[1:])):  # cột tăng dần theo số thứ tự
+            return r, found
+    return None, {}
+
+
+def load_bang_ke_excel(file_path):
+    """
+    Bóc tách Bảng kê thu mua nguyên liệu theo Thông tư 05/2018/TT-BCT (Phụ lục III - Tiêu chí WO).
+    Hỗ trợ tự động nhận diện Sheet, quét tiêu đề động và gom nhóm dữ liệu theo Hóa đơn, Tàu cá, và SC.
+    Returns:
+      - meta: Thông tin chung tờ khai (Doanh nghiệp, MST, TKHQ, Tên hàng, HS, Khối lượng xuất, FOB)
+      - records: Danh sách các dòng chi tiết nguyên liệu
+      - by_invoice: Dict gom nhóm theo Số Hóa đơn GTGT
+      - by_vessel: Dict gom nhóm theo Số hiệu tàu cá
+      - by_sc: Dict gom nhóm theo Số giấy xác nhận SC
+    """
+    if not os.path.exists(file_path):
+        raise FileNotFoundError(f"Không tìm thấy file Bảng kê: {file_path}")
+
+    wb = open_excel_workbook(file_path)
+
+    # 1. Tìm Sheet Bảng Kê
+    ws = None
+    target_sheet_name = ""
+    for sname in wb.sheetnames:
+        s_low = sname.lower()
+        if any(k in s_low for k in ['tv', 'bangke', 'bang ke', 'bảng kê', 'wo', 'phụ lục iii', 'phu luc iii', 'tt05']):
+            ws = wb[sname]
+            target_sheet_name = sname
+            break
+
+    if ws is None:
+        # Quét nội dung các sheet
+        for sname in wb.sheetnames:
+            candidate_ws = wb[sname]
+            found = False
+            for r in range(1, min(12, candidate_ws.max_row + 1)):
+                for c in range(1, min(10, candidate_ws.max_column + 1)):
+                    val = str(candidate_ws.cell(r, c).value or '').upper()
+                    if 'THÔNG TƯ SỐ 05' in val or 'TIÊU CHÍ "WO"' in val or 'BẢNG KÊ KHAI' in val or 'PHỤ LỤC III' in val:
+                        ws = candidate_ws
+                        target_sheet_name = sname
+                        found = True
+                        break
+                if found:
+                    break
+            if ws:
+                break
+
+    if ws is None:
+        ws = wb.active
+        target_sheet_name = wb.sheetnames[0]
+
+    # 2. Bóc tách Metadata (Thông tin chung)
+    meta = {
+        'sheet_name': target_sheet_name,
+        'trader_name': '',
+        'trader_mst': '',
+        'customs_declaration': '',
+        'goods_name': '',
+        'hs_code': '',
+        'export_qty': 0.0,
+        'fob_val': 0.0,
+        'fob_unit': 'USD',
+        'criterion': 'WO'
+    }
+
+    for r in range(1, min(15, ws.max_row + 1)):
+        for c in range(1, min(15, ws.max_column + 1)):
+            v = str(ws.cell(r, c).value or '').strip()
+            v_low = v.lower()
+            if 'tên thương nhân' in v_low:
+                if ':' in v:
+                    meta['trader_name'] = v.split(':', 1)[1].strip()
+                elif c + 1 <= ws.max_column and ws.cell(r, c + 1).value:
+                    meta['trader_name'] = str(ws.cell(r, c + 1).value).strip()
+            elif 'mã số thuế' in v_low:
+                if ':' in v:
+                    meta['trader_mst'] = v.split(':', 1)[1].strip()
+                elif c + 1 <= ws.max_column and ws.cell(r, c + 1).value:
+                    meta['trader_mst'] = str(ws.cell(r, c + 1).value).strip()
+            elif 'tkhq' in v_low or 'tờ khai' in v_low:
+                if ':' in v:
+                    meta['customs_declaration'] = v.split(':', 1)[1].strip()
+                elif c + 1 <= ws.max_column and ws.cell(r, c + 1).value:
+                    meta['customs_declaration'] = str(ws.cell(r, c + 1).value).strip()
+            elif 'tên hàng hóa' in v_low:
+                if ':' in v:
+                    meta['goods_name'] = v.split(':', 1)[1].strip()
+                elif c + 1 <= ws.max_column and ws.cell(r, c + 1).value:
+                    meta['goods_name'] = str(ws.cell(r, c + 1).value).strip()
+            elif 'mã hs của hàng hóa' in v_low:
+                m_hs = re.search(r'(\d{4,8})', v.split(':', 1)[-1])
+                if m_hs:
+                    meta['hs_code'] = m_hs.group(1)
+                else:
+                    nxt = _next_value(ws, r, c)
+                    if nxt is not None and re.search(r'\d{4,8}', str(nxt)):
+                        meta['hs_code'] = str(nxt).strip()
+            elif 'số lượng (kg)' in v_low or 'số lượng:' in v_low:
+                nxt = _next_value(ws, r, c)
+                if nxt is not None:
+                    meta['export_qty'] = parse_num(nxt)
+            elif 'trị giá (fob)' in v_low or 'trị giá fob' in v_low:
+                nxt = _next_value(ws, r, c)
+                if nxt is not None:
+                    meta['fob_val'] = parse_num(nxt)
+
+    # 3. Nhận diện các cột dữ liệu
+    col_map = {
+        'stt': 2,
+        'material': 3,
+        'spec': 4,
+        'hs': 5,
+        'origin': 6,
+        'qty': 7,
+        'price': 8,
+        'amount': 9,
+        'supplier': 10,
+        'address': 11,
+        'hd_no': 12,
+        'hd_date': 14,
+        'sc_no': 15,
+        'vessel': 16,
+        'owner': 17,
+        'tp_qty': 18,
+        'norm': 19
+    }
+
+    header_row = 16
+    # 3a. Cách chắc chắn nhất: dò DÒNG ĐÁNH SỐ CỘT theo mẫu Thông tư (-1, -2, ... hoặc (1), (2), ... (14)).
+    #     Dùng được cho mọi biến thể: bảng bắt đầu ở cột A hay B, có/không có cột Size, ô HĐ gộp/tách...
+    num_row, num_cols = _find_numbering_row(ws)
+    if num_row:
+        header_row = num_row
+        nc = num_cols
+        col_map.update({
+            'stt': nc[1], 'material': nc[2], 'hs': nc[3], 'origin': nc[4], 'qty': nc[5],
+            'price': nc[6], 'amount': nc[7], 'supplier': nc[8], 'address': nc[9],
+            'hd_no': nc[10], 'hd_date': nc[11], 'sc_no': nc[12], 'vessel': nc[13],
+        })
+        col_map['owner'] = nc.get(14, nc[13] + 1)
+        # Cột Size/quy cách (không đánh số) nằm giữa (2) Tên NL và (3) Mã HS nếu có
+        col_map['spec'] = nc[2] + 1 if nc[3] - nc[2] > 1 else None
+        col_map['tp_qty'] = col_map['owner'] + 1
+        col_map['norm'] = col_map['owner'] + 2
+
+    # 3b. Dự phòng: dò theo chữ tiêu đề (mẫu cũ)
+    for r in ([] if num_row else range(1, min(40, ws.max_row + 1))):
+        row_txt = " ".join([str(ws.cell(r, c).value or '') for c in range(1, min(25, ws.max_column + 1))]).lower()
+        if 'đơn giá' in row_txt and 'số lượng' in row_txt and 'hóa đơn' in row_txt:
+            header_row = r
+            for c in range(1, min(25, ws.max_column + 1)):
+                c_val = str(ws.cell(r, c).value or '').lower()
+                c_above = str(ws.cell(r - 1, c).value or '').lower() if r > 1 else ''
+                c_above2 = str(ws.cell(r - 2, c).value or '').lower() if r > 2 else ''
+                combined = f"{c_above2} {c_above} {c_val}"
+
+                if ('stt' in combined or c_val == '-1') and 'hóa đơn' not in combined:
+                    col_map['stt'] = c
+                elif ('tên nguyên liệu' in combined or c_val == '-2') and 'hóa đơn' not in combined:
+                    col_map['material'] = c
+                elif 'mã hs' in combined and 'hóa đơn' not in combined:
+                    col_map['hs'] = c
+                elif ('số lượng' in combined and ('kgs' in combined or 'kg' in combined or c_val == '-5')) and 'hóa đơn' not in combined:
+                    col_map['qty'] = c
+                elif (('đơn giá' in combined and 'hóa đơn' not in combined) or c_val == '-6'):
+                    col_map['price'] = c
+                elif (('tổng trị giá' in combined or 'trị giá (vnđ)' in combined) and 'hóa đơn' not in combined) or c_val == '-7':
+                    col_map['amount'] = c
+                elif (('nhà sản xuất' in combined or 'tên' in c_val) and ('cung cấp' in combined or c_val == '-8')) and 'hóa đơn' not in combined:
+                    col_map['supplier'] = c
+                elif ('địa chỉ' in combined or c_val == '-9') and 'hóa đơn' not in combined:
+                    col_map['address'] = c
+                elif ('số' in c_val or c_val == '-10') and ('hóa đơn' in combined or 'giá trị gia tăng' in combined):
+                    col_map['hd_no'] = c
+                elif ('ngày' in c_val or c_val == '-11') and ('hóa đơn' in combined or 'giá trị gia tăng' in combined or 'ngày' in c_val):
+                    col_map['hd_date'] = c
+                elif 'số giấy xác nhận' in combined or 'số giấy' in combined or c_val == '-12':
+                    col_map['sc_no'] = c
+                elif 'số đăng ký' in combined or 'nghề khai thác' in combined or c_val == '-13':
+                    col_map['vessel'] = c
+                elif 'chủ tàu' in combined or 'thuyền trưởng' in combined or c_val == '-14':
+                    col_map['owner'] = c
+            break
+
+    # 4. Trích xuất từng dòng dữ liệu
+    records = []
+    data_start_row = header_row + 1
+    for r in range(data_start_row, ws.max_row + 1):
+        stt_val = ws.cell(r, col_map['stt']).value
+        if stt_val is None or not str(stt_val).strip().isdigit():
+            c_check = " ".join([str(ws.cell(r, c).value or '') for c in range(1, 10)]).lower()
+            if 'tổng' in c_check or 'total' in c_check:
+                break
+            continue
+
+        stt = int(stt_val)
+        material = str(ws.cell(r, col_map['material']).value or '').strip()
+        spec = str(ws.cell(r, col_map['spec']).value or '').strip() if col_map.get('spec') else ''
+        hs = str(ws.cell(r, col_map['hs']).value or '').strip()
+        origin = str(ws.cell(r, col_map['origin']).value or '').strip()
+        qty = parse_num(ws.cell(r, col_map['qty']).value)
+        price = parse_num(ws.cell(r, col_map['price']).value)
+        amount = parse_num(ws.cell(r, col_map['amount']).value)
+        supplier = str(ws.cell(r, col_map['supplier']).value or '').strip()
+        address = str(ws.cell(r, col_map['address']).value or '').strip()
+        
+        hd_raw = str(ws.cell(r, col_map['hd_no']).value or '').strip()
+        hd_clean = hd_raw.lstrip('0') if hd_raw.isdigit() else hd_raw
+        if not hd_clean and hd_raw:
+            hd_clean = "0"
+            
+        hd_date = normalize_date_str(ws.cell(r, col_map['hd_date']).value)
+        sc_no = str(ws.cell(r, col_map['sc_no']).value or '').strip()
+        vessel_raw = str(ws.cell(r, col_map['vessel']).value or '').strip()
+        vessel_norm = normalize_vessel_id(vessel_raw)
+        owner = str(ws.cell(r, col_map['owner']).value or '').strip()
+        
+        tp_qty = parse_num(ws.cell(r, col_map.get('tp_qty', 18)).value)
+        norm = parse_num(ws.cell(r, col_map.get('norm', 19)).value)
+
+        rec = {
+            'row_idx': r,
+            'stt': stt,
+            'material': material,
+            'spec': spec,
+            'hs': hs,
+            'origin': origin,
+            'qty': qty,
+            'price': price,
+            'amount': amount,
+            'supplier': supplier,
+            'address': address,
+            'hd_no': hd_clean,
+            'hd_no_raw': hd_raw,
+            'hd_date': hd_date,
+            'sc_no': sc_no,
+            'vessel_id': vessel_norm,
+            'vessel_raw': vessel_raw,
+            'owner': owner,
+            'tp_qty': tp_qty,
+            'norm': norm
+        }
+        records.append(rec)
+
+    from collections import defaultdict
+    by_invoice = defaultdict(list)
+    by_vessel = defaultdict(list)
+    by_sc = defaultdict(list)
+
+    for rec in records:
+        by_invoice[rec['hd_no']].append(rec)
+        by_vessel[rec['vessel_id']].append(rec)
+        by_sc[rec['sc_no']].append(rec)
+
+    return meta, records, dict(by_invoice), dict(by_vessel), dict(by_sc)

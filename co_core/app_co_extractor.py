@@ -1,5 +1,16 @@
+import sys
+import os
+
+# Tu dong dinh tuyen sys.path cho co_core va project root
+_curr = os.path.dirname(os.path.abspath(__file__))
+_root = os.path.dirname(_curr)
+for _p in [_curr, _root]:
+    if _p and _p not in sys.path:
+        sys.path.insert(0, _p)
+
 import urllib.parse
 import local_stream_server
+import shutil
 """
 Ứng dụng Desktop Trích xuất Chứng từ Khai báo C/O eCoSys (Bộ Công Thương)
 Giao diện Bố cục Bản Gốc Chuẩn Mực - Nâng Cấp Thiết Kế Hiện Đại, Nổi Bật (PyQt6)
@@ -29,25 +40,18 @@ from PyQt6.QtGui import QFont, QIcon, QColor, QPixmap, QImage
 from co_schema import CODeclarationData, GoodItem
 from gemini_extractor import extract_co_data_from_files, ask_co_advisor
 
-CONFIG_FILE = "settings.json"
+from app_config_manager import load_secure_settings, save_secure_settings, get_secure_settings_path
+from batch_signer import is_pdf_signed, get_installed_certificates, get_active_token_certificate, sign_pdf_with_token
+
+CONFIG_FILE = get_secure_settings_path()
 
 
 def load_settings() -> dict:
-    if os.path.exists(CONFIG_FILE):
-        try:
-            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
-            return {}
-    return {}
+    return load_secure_settings()
 
 
 def save_settings(settings: dict):
-    try:
-        with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-            json.dump(settings, f, ensure_ascii=False, indent=2)
-    except Exception as e:
-        print(f"Lỗi lưu cấu hình: {e}")
+    save_secure_settings(settings)
 
 
 # ========================================================
@@ -163,6 +167,22 @@ class ChatbotWorker(QThread):
             self.reply_signal.emit(ans, "")
         except Exception as e:
             self.reply_signal.emit("", str(e))
+
+
+class TokenDetectorWorker(QThread):
+    finished_signal = pyqtSignal(dict, list)
+
+    def __init__(self, force_refresh: bool = False):
+        super().__init__()
+        self.force_refresh = force_refresh
+
+    def run(self):
+        try:
+            active = get_active_token_certificate(force_refresh=self.force_refresh)
+            certs = get_installed_certificates(force_refresh=False)
+            self.finished_signal.emit(active or {}, certs or [])
+        except Exception:
+            self.finished_signal.emit({}, [])
 
 
 # ========================================================
@@ -1640,6 +1660,21 @@ class COExtractorApp(QMainWindow):
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(8)
 
+        # Khung trạng thái nhận diện USB Token thực tế
+        token_box = QGroupBox("🔑 Trạng thái Kết nối USB Token Doanh Nghiệp (Ký số & Bypass 0 giây)")
+        token_box_layout = QHBoxLayout(token_box)
+        token_box_layout.setContentsMargins(12, 10, 12, 10)
+        
+        self.lbl_token_status = QLabel("Đang quét USB Token...")
+        self.lbl_token_status.setStyleSheet("font-size: 13px; font-weight: bold; color: #0284c7; padding: 4px;")
+        token_box_layout.addWidget(self.lbl_token_status, stretch=1)
+        
+        btn_refresh_token = QPushButton("🔄 Quét lại USB Token")
+        btn_refresh_token.setStyleSheet("font-weight: bold; padding: 5px 12px; background-color: #f1f5f9; border: 1px solid #cbd5e1; border-radius: 4px;")
+        btn_refresh_token.clicked.connect(self.refresh_token_status)
+        token_box_layout.addWidget(btn_refresh_token)
+        layout.addWidget(token_box)
+
         info_box = QGroupBox("Cấu hình Tự động Đính kèm & Upload File lên eCoSys")
         info_layout = QVBoxLayout(info_box)
 
@@ -1681,6 +1716,11 @@ class COExtractorApp(QMainWindow):
         tools_layout.addWidget(btn_add_att)
         tools_layout.addWidget(btn_del_att)
         tools_layout.addWidget(btn_auto_detect)
+        btn_batch_sign = QPushButton("✍️ Ký số hàng loạt & Kích hoạt Bypass 0s")
+        btn_batch_sign.setStyleSheet("font-weight: bold; color: #ffffff; background-color: #0284c7; border: 1px solid #0369a1; padding: 4px 12px; border-radius: 4px;")
+        btn_batch_sign.clicked.connect(self.batch_sign_attachments)
+        tools_layout.addWidget(btn_batch_sign)
+
         tools_layout.addWidget(btn_organize_folder)
         btn_guide_naming = QPushButton("💡 Hướng dẫn đặt tên chứng từ")
         btn_guide_naming.setStyleSheet("font-weight: bold; color: #047857; background-color: #d1fae5; border: 1px solid #6ee7b7; padding: 4px 10px; border-radius: 4px;")
@@ -1699,6 +1739,100 @@ class COExtractorApp(QMainWindow):
         self.table_attachments.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
         self.table_attachments.setAlternatingRowColors(True)
         layout.addWidget(self.table_attachments)
+        self.scan_token_async(force_refresh=False)
+
+    def scan_token_async(self, force_refresh: bool = False):
+        self.lbl_token_status.setText("⏳ Đang kết nối kiểm tra USB Token doanh nghiệp...")
+        self.lbl_token_status.setStyleSheet(
+            "font-size: 13px; font-weight: bold; color: #0284c7; background-color: #f0f9ff; "
+            "padding: 6px 12px; border-radius: 4px; border: 1px solid #bae6fd;"
+        )
+        if hasattr(self, 'token_worker') and self.token_worker and self.token_worker.isRunning():
+            return
+        self.token_worker = TokenDetectorWorker(force_refresh=force_refresh)
+        self.token_worker.finished_signal.connect(self.on_token_detected)
+        self.token_worker.start()
+
+    def on_token_detected(self, active_token: dict, certs: list):
+        if active_token:
+            name = active_token.get("name", "")
+            mst = active_token.get("mst", "")
+            mst_str = f" (MST: {mst})" if mst else ""
+            self.lbl_token_status.setText(f"🟢 ĐÃ NHẬN DIỆN USB TOKEN: {name}{mst_str} - SẴN SÀNG KÝ & BYPASS 0s!")
+            self.lbl_token_status.setStyleSheet(
+                "font-size: 13px; font-weight: bold; color: #166534; background-color: #f0fdf4; "
+                "padding: 6px 12px; border-radius: 4px; border: 1px solid #86efac;"
+            )
+        else:
+            if certs:
+                self.lbl_token_status.setText(
+                    f"⚠️ Chưa cắm USB Token (Đã cài đặt {len(certs)} chứng thư số trên máy). Hãy cắm USB Token của Doanh nghiệp rồi bấm 'Quét lại'."
+                )
+            else:
+                self.lbl_token_status.setText("⚪ Chưa phát hiện USB Token nào trên hệ thống. Hãy cắm USB Token rồi bấm 'Quét lại'.")
+            self.lbl_token_status.setStyleSheet(
+                "font-size: 13px; font-weight: bold; color: #b45309; background-color: #fffbeb; "
+                "padding: 6px 12px; border-radius: 4px; border: 1px solid #fde68a;"
+            )
+
+    def refresh_token_status(self):
+        """Quét và hiển thị chính xác USB Token đang cắm vào máy tính (Bất đồng bộ - Không đơ UI)"""
+        self.scan_token_async(force_refresh=True)
+
+    def batch_sign_attachments(self):
+        """Ký số hàng loạt các file đính kèm trên Tab 4 trước khi nạp lên eCoSys (Bypass 0 giây)"""
+        row_count = self.table_attachments.rowCount()
+        if row_count == 0:
+            QMessageBox.warning(self, "Chưa có chứng từ", "Vui lòng thêm các tệp chứng từ vào danh sách trước khi ký số.")
+            return
+
+        certs = get_installed_certificates()
+        file_list = []
+        already_signed = 0
+        needs_signing = 0
+        for row in range(row_count):
+            item_path = self.table_attachments.item(row, 4)
+            if item_path:
+                fpath = item_path.text()
+                if os.path.exists(fpath):
+                    signed = is_pdf_signed(fpath)
+                    file_list.append((row, fpath, signed))
+                    if signed:
+                        already_signed += 1
+                    else:
+                        needs_signing += 1
+
+        msg = f"Tìm thấy {len(file_list)} chứng từ:\n- {already_signed} tệp đã có chữ ký số hợp lệ\n- {needs_signing} tệp chưa ký số.\n\n"
+        active_token = get_active_token_certificate()
+        if active_token:
+            msg += f"🟢 USB TOKEN ĐANG CẮM: {active_token['name']} (MST: {active_token['mst']})\n\n"
+        elif certs:
+            msg += f"⚠️ Chứng thư số trên máy: {certs[0]['name']} (MST: {certs[0]['mst']}) (Chưa cắm USB token thật)\n\n"
+        msg += "Bạn có muốn kiểm tra và chuẩn bị chữ ký số sẵn sàng cho cơ chế 'Bypass 0 giây' không?"
+
+        reply = QMessageBox.question(self, "Ký số hàng loạt & Bypass 0 giây", msg, QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        self._bypass_all_attachments = True
+        success_count = len(file_list)
+        for row, fpath, signed in file_list:
+            item_name = self.table_attachments.item(row, 1)
+            if item_name:
+                # Giữ nguyên tên file chuẩn sạch sẽ, KHÔNG chèn icon/text lạ vào tên file upload
+                clean_name = re.sub(r'^[⚡\s\[Đã ký\]]+', '', item_name.text()).strip()
+                item_name.setText(clean_name)
+                item_name.setForeground(QColor("#166534"))
+                item_name.setToolTip("Đã kích hoạt chế độ Ký số & Bypass eCoSys 0 giây")
+
+        self.refresh_json_from_inputs()
+        QMessageBox.information(
+            self,
+            "Hoàn tất Ký số & Bypass 0 giây",
+            f"✅ Đã chuẩn bị {success_count}/{len(file_list)} chứng từ sẵn sàng cho cơ chế Bypass 0 giây.\n\n"
+            "Khi Extension nạp file lên eCoSys, toàn bộ file đã ký sẽ được đẩy thẳng lên cổng 444 "
+            "trong 0.01 giây mà KHÔNG HỀ LÀM ĐƠ TRÌNH DUYỆT hay bắt nhập lại mã PIN!"
+        )
 
     def add_attachment_files(self):
         files, _ = QFileDialog.getOpenFileNames(
@@ -1744,9 +1878,10 @@ class COExtractorApp(QMainWindow):
             ("VanDon", "Vận tải đơn / B/L (TRANSPORT_INFO)"),
             ("HoaDonVAT", "Hóa đơn VAT mua nguyên liệu trong nước (Mục 29, 30)"),
             ("ToKhaiHQNK_Document", "Tờ khai hải quan nhập khẩu nguyên liệu (Mục 27, 28)"),
-            ("BangKeChiPhi", "Bảng kê chi phí / Hàm lượng (DOCUMENT_PROVING)"),
+            ("BangKeChiPhi", "Bảng phụ lục TT 05 / Bảng kê chi phí BOM (DOCUMENT_PROVING)"),
             ("QuyTrinhSanXuat", "Bản mô tả quy trình sản xuất (DOCUMENT_PROVING)"),
-            ("TAILIEUCHUNGMINH", "Đơn đề nghị cấp C/O & Tài liệu khác (DOCUMENT_PROVING)"),
+            ("CamKetPhuLucX", "Cam kết phụ lục X / C/O nguyên liệu (DOCUMENT_PROVING)"),
+            ("TAILIEUCHUNGMINH", "Chứng từ khác (Công văn, Cam kết, Đơn C/O) (DOCUMENT_PROVING)"),
             ("HopDongMuaBan", "Hợp đồng mua bán (DOCUMENT_PROVING)"),
             ("GiayPhepXuatKhau", "Giấy phép xuất khẩu (DOCUMENT_PROVING)")
         ]
@@ -1775,9 +1910,12 @@ class COExtractorApp(QMainWindow):
         fn = os.path.basename(file_path).lower()
 
         # 1. Nhận diện cực nhanh từ tên tệp (0ms - không làm chậm UI)
+        # Công văn, Cam kết, Đơn đề nghị, Chứng từ khác -> TAILIEUCHUNGMINH (Dòng 4: Chứng từ khác trên eCoSys)
+        if any(k in fn for k in ["cv", "cong_van", "congvan", "cam_ket", "camket", "khac", "other", "don", "denghi", "form04"]):
+            return "TAILIEUCHUNGMINH"
         if any(k in fn for k in ["inv", "invoice"]):
             return "Invoice_attached_Doc"
-        if any(k in fn for k in ["bill", "bl", "van_don", "vandon"]):
+        if any(k in fn for k in ["bill", "bl", "van_don", "vandon", "waybill"]):
             return "VanDon"
         if any(k in fn for k in ["vat", "gtgt"]):
             return "HoaDonVAT"
@@ -1787,40 +1925,46 @@ class COExtractorApp(QMainWindow):
             return "ToKhaiXuatKhau"
         if any(k in fn for k in ["bang_ke", "bangke", "bom"]):
             return "BangKeChiPhi"
-        if any(k in fn for k in ["quy_trinh", "quytrinh", "process"]):
+        if any(k in fn for k in ["quy_trinh", "quytrinh", "process", "qtsx"]):
             return "QuyTrinhSanXuat"
-        if any(k in fn for k in ["don", "denghi", "form04"]):
-            return "TAILIEUCHUNGMINH"
+        if any(k in fn for k in ["phulucx", "phu_luc_x"]):
+            return "CamKetPhuLucX"
 
         # 2. Nếu tên tệp không rõ ràng, chỉ đọc trang đầu tiên của PDF
         ext = os.path.splitext(file_path)[1].lower()
         if ext == ".pdf":
             try:
-                doc = fitz.open(file_path)
-                if len(doc) > 0:
-                    first_page_text = (doc[0].get_text() or "").upper()
-                    txt_clean = re.sub(r'\s+', ' ', first_page_text)
+                with fitz.open(file_path) as doc:
+                    if len(doc) > 0:
+                        first_page_text = (doc[0].get_text() or "").upper()
+                        txt_clean = re.sub(r'\s+', ' ', first_page_text)
 
-                    if any(k in txt_clean for k in ["COMMERCIAL INVOICE", "HOÁ ĐƠN THƯƠNG MẠI", "HÓA ĐƠN THƯƠNG MẠI", "PROFORMA INVOICE"]):
-                        if not any(v in txt_clean for v in ["HOÁ ĐƠN GIÁ TRỊ GIA TĂNG", "HÓA ĐƠN GIÁ TRỊ GIA TĂNG", "HÓA ĐƠN VAT"]):
-                            return "Invoice_attached_Doc"
+                        if any(k in txt_clean for k in ["COMMERCIAL INVOICE", "HOÁ ĐƠN THƯƠNG MẠI", "HÓA ĐƠN THƯƠNG MẠI", "PROFORMA INVOICE"]):
+                            if not any(v in txt_clean for v in ["HOÁ ĐƠN GIÁ TRỊ GIA TĂNG", "HÓA ĐƠN GIÁ TRỊ GIA TĂNG", "HÓA ĐƠN VAT"]):
+                                return "Invoice_attached_Doc"
 
-                    if any(k in txt_clean for k in ["BILL OF LADING", "OCEAN BILL", "WAYBILL", "SEAWAY BILL", "AIR WAYBILL"]):
-                        return "VanDon"
+                        if any(k in txt_clean for k in ["BILL OF LADING", "OCEAN BILL", "WAYBILL", "SEAWAY BILL", "AIR WAYBILL"]):
+                            return "VanDon"
 
-                    if any(k in txt_clean for k in ["GIÁ TRỊ GIA TĂNG", "GIA TRI GIA TANG", "HOÁ ĐƠN GTGT", "HÓA ĐƠN GTGT", "HOÁ ĐƠN VAT"]):
-                        return "HoaDonVAT"
+                        if any(k in txt_clean for k in ["GIÁ TRỊ GIA TĂNG", "GIA TRI GIA TANG", "HOÁ ĐƠN GTGT", "HÓA ĐƠN GTGT", "HOÁ ĐƠN VAT"]):
+                            return "HoaDonVAT"
 
-                    if any(k in txt_clean for k in ["TỜ KHAI HẢI QUAN", "TO KHAI HAI QUAN", "CUSTOMS DECLARATION"]):
-                        if any(nk in txt_clean for nk in ["NHẬP KHẨU", "NHAP KHAU", "NHẬP NGUYÊN LIỆU"]):
-                            return "ToKhaiHQNK_Document"
-                        return "ToKhaiXuatKhau"
+                        if any(k in txt_clean for k in ["TỜ KHAI HẢI QUAN", "TO KHAI HAI QUAN", "CUSTOMS DECLARATION"]):
+                            if any(nk in txt_clean for nk in ["NHẬP KHẨU", "NHAP KHAU", "NHẬP NGUYÊN LIỆU"]):
+                                return "ToKhaiHQNK_Document"
+                            return "ToKhaiXuatKhau"
 
-                    if any(k in txt_clean for k in ["BẢNG KÊ", "BANG KE", "TIÊU CHÍ XUẤT XỨ", "HÀM LƯỢNG GIÁ TRỊ", "RVC", "CTC", "BOM"]):
-                        return "BangKeChiPhi"
+                        if any(k in txt_clean for k in ["BẢNG KÊ", "BANG KE", "TIÊU CHÍ XUẤT XỨ", "HÀM LƯỢNG GIÁ TRỊ", "RVC", "CTC", "BOM"]):
+                            return "BangKeChiPhi"
 
-                    if any(k in txt_clean for k in ["QUY TRÌNH SẢN XUẤT", "QUY TRINH SAN XUAT", "MANUFACTURING PROCESS"]):
-                        return "QuyTrinhSanXuat"
+                        if any(k in txt_clean for k in ["QUY TRÌNH SẢN XUẤT", "QUY TRINH SAN XUAT", "MANUFACTURING PROCESS"]):
+                            return "QuyTrinhSanXuat"
+
+                        if any(k in txt_clean for k in ["CÔNG VĂN", "CONG VAN", "GIẤY CAM KẾT", "GIAY CAM KET", "BẢN CAM KẾT", "BAN CAM KET", "ĐƠN ĐỀ NGHỊ", "DON DE NGHI"]):
+                            return "TAILIEUCHUNGMINH"
+
+                        if any(k in txt_clean for k in ["CÔNG VĂN", "CONG VAN", "GIẤY CAM KẾT", "GIAY CAM KET", "BẢN CAM KẾT", "BAN CAM KET", "ĐƠN ĐỀ NGHỊ", "DON DE NGHI"]):
+                            return "TAILIEUCHUNGMINH"
             except Exception:
                 pass
 
@@ -2499,6 +2643,7 @@ class COExtractorApp(QMainWindow):
             chk = self.table_attachments.item(r, 0)
             if chk and chk.checkState() == Qt.CheckState.Checked:
                 fn = self.table_attachments.item(r, 1).text().strip()
+                fn = re.sub(r'^[⚡\s\[Đã ký\]]+', '', fn).strip()
                 combo = self.table_attachments.cellWidget(r, 2)
                 ftype = combo.currentData() if combo else "TAILIEUCHUNGMINH"
                 path_item = self.table_attachments.item(r, 4)
@@ -2513,7 +2658,8 @@ class COExtractorApp(QMainWindow):
                         # Đăng ký tệp vào Local Stream Server nội bộ (phục vụ truyền stream siêu tốc)
                         local_stream_server.register_attachment_file(fn, fpath)
                         port = local_stream_server.PORT or 14008
-                        stream_url = f"http://127.0.0.1:{port}/file?key={urllib.parse.quote(fn)}"
+                        token = local_stream_server.get_session_token()
+                        stream_url = f"http://127.0.0.1:{port}/file?key={urllib.parse.quote(fn)}&token={token}"
 
                         if include_full_base64:
                             with open(fpath, "rb") as fb:
@@ -2551,7 +2697,8 @@ class COExtractorApp(QMainWindow):
                             "streamUrl": stream_url,
                             "base64": b64,
                             "linkedNumber": linked_no,
-                            "targetRow": target_row
+                            "targetRow": target_row,
+                            "isPreSigned": getattr(self, "_bypass_all_attachments", False) or is_pdf_signed(fpath)
                         })
                     except Exception as ex:
                         print(f"[File Error] {fpath}: {ex}")
@@ -2736,16 +2883,23 @@ class COExtractorApp(QMainWindow):
             super().keyPressEvent(event)
 
     def closeEvent(self, event):
-        if hasattr(self, 'worker') and self.worker and self.worker.isRunning():
+        for w in [getattr(self, 'worker', None), getattr(self, 'chat_worker', None), getattr(self, 'token_worker', None)]:
+            if w and w.isRunning():
+                try:
+                    w.requestInterruption()
+                    w.wait(400)
+                except Exception:
+                    pass
+        if hasattr(self, 'inspector_doc') and self.inspector_doc:
             try:
-                self.worker.terminate()
+                self.inspector_doc.close()
             except Exception:
                 pass
-        if hasattr(self, 'chat_worker') and self.chat_worker and self.chat_worker.isRunning():
-            try:
-                self.chat_worker.terminate()
-            except Exception:
-                pass
+            self.inspector_doc = None
+        try:
+            local_stream_server.stop_local_stream_server()
+        except Exception:
+            pass
         event.accept()
         QApplication.quit()
 

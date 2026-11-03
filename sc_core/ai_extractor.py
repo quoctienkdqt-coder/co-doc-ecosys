@@ -42,9 +42,6 @@ def load_ai_config():
         except Exception:
             pass
             
-    # Auto-upgrade any legacy gemini-2.5 or 1.5 references
-    if "3.8" in str(default_cfg.get("gemini_model", "")):
-        default_cfg["gemini_model"] = "gemini-2.5-flash"
     return default_cfg
 
 def save_ai_config(cfg_dict):
@@ -88,7 +85,7 @@ def test_ai_connection(provider, api_key, model_name=None, base_url=None):
             return False, f"Lỗi kết nối APIZ.vn: {e}", None
 
     elif provider.lower() == "gemini":
-        m_req = model_name if (model_name and "3.8" not in model_name) else "gemini-2.5-flash"
+        m_req = model_name or "gemini-2.5-flash"
         candidate_models = [m_req, "gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]
 
         last_err = ""
@@ -419,6 +416,7 @@ def extract_sc_with_openai_compatible(file_path, api_key, model="gemini-3.8-flas
             "image_url": {"url": f"data:image/jpeg;base64,{img_b64}", "detail": "high"}
         })
 
+    doc.close()
     if progress_cb: progress_cb(0.5, f"AI Vision ({model}) đang phân tích bảng biểu SC...")
     messages = [
         {"role": "user", "content": [
@@ -553,14 +551,19 @@ def extract_sc_with_ai(file_path, provider=None, api_key=None, model=None, base_
 
     # 3. Format and clean
     sc_number = extracted.get("sc_number", "")
-    # Fallback to filename if missing
+    m_fn = re.search(r'(\d{4,6})\D+(\d{4})\D+SC\s*([A-ZĐ\s\-]+)?', os.path.basename(file_path), re.IGNORECASE)
     if not sc_number or sc_number.startswith("/") or len(sc_number) < 5:
-        m_fn = re.search(r'(\d{4,6})\D+(\d{4})\D+SC\s*([A-ZĐ\s\-]+)?', os.path.basename(file_path), re.IGNORECASE)
         if m_fn:
             num_pref = m_fn.group(1)
             yr = m_fn.group(2)
             suf = m_fn.group(3).strip().replace(" ", "-") if m_fn.group(3) else "GL-TQ"
             sc_number = f"{num_pref}/{yr}/SC-{suf}"
+    elif m_fn and "/" in sc_number:
+        # Nếu tên file ghi rõ số SC (VD: 00047) mà AI đọc nhầm chữ số mờ (VD: 00042), chuẩn hóa theo số trên tên file
+        fn_num = m_fn.group(1).zfill(5)
+        sc_prefix = sc_number.split("/")[0].strip().zfill(5)
+        if fn_num != sc_prefix:
+            sc_number = f"{m_fn.group(1)}{sc_number[sc_number.find('/'):]}"
 
     raw_records = extracted.get("records") or extracted.get("vessels") or []
     records = []

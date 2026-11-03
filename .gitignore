@@ -19,8 +19,15 @@ temp_update.zip
 
 # Local test & cache files
 backups_update/
+staging_update_*/
 cache/
+
+# Báo cáo đối chiếu (dữ liệu khách hàng — KHÔNG đưa lên GitHub công khai)
+KetQua_DoiChieu/
+BaoCao_DoiChieu_*.xlsx
+XNNL_DaChuanHoa_*.xlsx
 debug_profile/
+tai_lieu_mau/
 
 # Personal configuration (API Key)
 settings.json

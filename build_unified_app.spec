@@ -7,10 +7,10 @@ py_datas = [(f, '.') for f in glob.glob('*.py')]
 
 datas = [
     ('assets', 'assets'),
+    ('co_core', 'co_core'),
     ('sc_core', 'sc_core'),
     ('extension', 'extension'),
     ('settings.json', '.'),
-    ('sample_data.json', '.'),
     ('version.json', '.')
 ] + py_datas
 
@@ -25,7 +25,14 @@ hiddenimports = [
     'google.genai',
     'requests',
     'urllib3',
+    'co_core',
+    'co_core.app_co_extractor',
+    'co_core.co_schema',
+    'co_core.gemini_extractor',
+    'co_core.local_stream_server',
+    'co_core.batch_signer',
     'local_stream_server',
+    'batch_signer',
     'github_updater'
 ]
 

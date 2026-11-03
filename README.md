@@ -21,6 +21,7 @@
    * Tự động quét và đọc hiểu Giấy SC gốc cảng cá bằng thị giác AI Gemini 3.8 Flash.
    * Đọc bảng Excel Phần mềm sản xuất (PMSX) và tự động gộp sản lượng các tàu cá cập cảng trùng ngày.
    * Đối chiếu chéo 7 tiêu chí trọng yếu: Số hiệu tàu cá, Chủ tàu, Nghề khai thác, Số GPKTTS, Hạn GPKTTS, Ngày bốc dỡ, Khối lượng nguyên liệu mua (kg).
+   * Đối chiếu **SC Excel ↔ SC scan PDF** (chọn lẻ hoặc quét thư mục): hiển thị song song Excel / SC gốc cho mọi trường, kiểm tra thời gian khai thác & ngày bốc dỡ nằm trong hạn giấy phép khai thác.
    * Xuất báo cáo Excel phân tích màu trực quan (Khớp 100%, Lệch trọng yếu, Thiếu hồ sơ) và tự động tạo File Excel đã chuẩn hóa.
 
 3. **Phân hệ 3: Trợ Lý Chuyên Gia AI Copilot Song Hành**

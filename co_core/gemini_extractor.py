@@ -382,14 +382,15 @@ def extract_co_data_via_apiz(
     if progress_cb:
         progress_cb(45, f"Đang gửi {page_count} trang tài liệu đến AI {model_name}...")
 
-    # Không giới hạn cứng token (để AI sinh tự nhiên theo toàn bộ dung lượng hồ sơ)
+    # Kích hoạt chế độ stream để dữ liệu trả về liên tục ngay từ giây đầu tiên, chống timeout khi tài liệu dài
     payload = {
         "model": model_name,
         "messages": [
             {"role": "user", "content": user_contents}
         ],
         "temperature": 0.1,
-        "response_format": {"type": "json_object"}
+        "response_format": {"type": "json_object"},
+        "stream": True
     }
 
     headers = {
@@ -407,7 +408,7 @@ def extract_co_data_via_apiz(
     for attempt in range(1, max_retries + 1):
         try:
             if progress_cb:
-                msg = f"AI {model_name} đang phân tích 30 trường dữ liệu C/O..."
+                msg = f"AI {model_name} đang phân tích hồ sơ C/O (chế độ truyền liên tục Stream)..."
                 if attempt > 1:
                     msg = f"Đang thử kết nối lại máy chủ AI lần {attempt}/{max_retries}..."
                 progress_cb(55 + (attempt - 1) * 5, msg)
@@ -416,13 +417,47 @@ def extract_co_data_via_apiz(
                 url,
                 json=payload,
                 headers=headers,
-                timeout=(30, 240)
+                stream=True,
+                timeout=(30, 360)
             )
 
             if resp.status_code == 200:
-                res = resp.json()
-                raw_text = res["choices"][0]["message"]["content"]
-                break
+                chunks = []
+                total_chars = 0
+                for line in resp.iter_lines():
+                    if not line:
+                        continue
+                    line_str = line.decode("utf-8", errors="ignore").strip()
+                    if line_str.startswith("data:"):
+                        data_content = line_str[5:].strip()
+                        if data_content == "[DONE]":
+                            break
+                        try:
+                            chunk_json = json.loads(data_content)
+                            choices = chunk_json.get("choices", [])
+                            if choices:
+                                delta = choices[0].get("delta", {})
+                                content = delta.get("content", "")
+                                if content:
+                                    chunks.append(content)
+                                    total_chars += len(content)
+                                    if progress_cb and (total_chars % 100 < len(content)):
+                                        pct = min(85, 55 + int(total_chars / 150))
+                                        progress_cb(pct, f"AI {model_name} đang trả dữ liệu ({total_chars} ký tự)...")
+                        except Exception:
+                            continue
+                raw_text = "".join(chunks)
+
+                # Fallback nếu máy chủ không trả dạng stream SSE mà trả thẳng JSON
+                if not raw_text:
+                    try:
+                        res = resp.json()
+                        raw_text = res["choices"][0]["message"]["content"]
+                    except Exception:
+                        pass
+
+                if raw_text:
+                    break
             elif resp.status_code in [500, 502, 503, 504]:
                 last_err = f"Máy chủ AI phản hồi mã lỗi {resp.status_code}: {resp.text[:200]}"
                 if attempt < max_retries:

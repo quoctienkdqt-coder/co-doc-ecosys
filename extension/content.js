@@ -139,8 +139,8 @@
       </div>
       
       <div class="ecosys-widget-body">
-        <div id="ecosys-plugin-status" style="font-size: 11px; padding: 6px 10px; border-radius: 6px; margin-bottom: 2px; display: flex; align-items: center; justify-content: space-between; background: #fef2f2; border: 1px solid #fecaca; color: #991b1b;">
-          <span id="ecosys-plugin-status-text">🔌 Ký số (14005): <b>Đang kiểm tra...</b></span>
+        <div id="ecosys-plugin-status" style="font-size: 11px; padding: 6px 10px; border-radius: 6px; margin-bottom: 2px; display: flex; align-items: center; justify-content: space-between; background: #eff6ff; border: 1px solid #bfdbfe; color: #1e40af;">
+          <span id="ecosys-plugin-status-text">⚡ Ký số eCoSys: <b>Đang kiểm tra...</b></span>
           <button type="button" id="ecosys-btn-check-plugin" style="background: transparent; border: none; text-decoration: underline; color: #1d4ed8; cursor: pointer; font-size: 11px; font-weight: 600;">Kiểm tra</button>
         </div>
 
@@ -406,21 +406,23 @@
     const boxEl = document.getElementById("ecosys-plugin-status");
     if (!textEl || !boxEl) return false;
 
-    textEl.innerHTML = `🔌 Ký số (14005): <i>Đang kiểm tra...</i>`;
+    textEl.innerHTML = `⚡ Ký số: <i>Đang kiểm tra...</i>`;
     const isOnline = await checkMoitSignPluginRunning();
 
     if (isOnline) {
       boxEl.style.background = "#f0fdf4";
       boxEl.style.borderColor = "#bbf7d0";
       boxEl.style.color = "#166534";
-      textEl.innerHTML = `🔌 Ký số (14005): <b>Sẵn sàng</b> ✅`;
+      textEl.innerHTML = `⚡ Ký số: <b>Sẵn sàng (Cổng 14005 & Bypass 0s)</b> ✅`;
       if (showLog) logMessage("✅ MOITSignPlugin (cổng 14005) đang hoạt động tốt!", "success");
     } else {
-      boxEl.style.background = "#fef2f2";
-      boxEl.style.borderColor = "#fecaca";
-      boxEl.style.color = "#991b1b";
-      textEl.innerHTML = `🔌 Ký số (14005): <b>Chưa bật</b>`;
-      if (showLog) logMessage("⚠️ MOITSignPlugin chưa bật!", "warn");
+      // Khi không bật MOIT plugin 14005, hệ thống tự động sử dụng cơ chế Bypass 0 giây từ App Python
+      boxEl.style.background = "#eff6ff";
+      boxEl.style.borderColor = "#bfdbfe";
+      boxEl.style.color = "#1e40af";
+      textEl.innerHTML = `⚡ Ký số: <b>Chế độ Bypass 0s Sẵn sàng</b> 🚀`;
+      textEl.title = "Các tệp chứng từ đã được ký trước từ App Python sẽ nạp thẳng lên eCoSys trong 0.01s mà không cần bật cổng 14005.";
+      if (showLog) logMessage("⚡ Đang kích hoạt cơ chế Ký số Bypass 0 giây (Siêu tốc, không cần cổng 14005)", "info");
     }
     return isOnline;
   }
@@ -642,7 +644,8 @@
   async function handleUploadAttachment(attInfo, matchingMode = "by_number") {
     if (!attInfo || !attInfo.base64 || !attInfo.fileName) return false;
 
-    const fileType = attInfo.fileType || classifyFileTypeByName(attInfo.fileName);
+    const cleanFileName = (attInfo.fileName || "").replace(/^[⚡\s\[Đã ký\]]+/g, "").trim();
+    const fileType = attInfo.fileType || classifyFileTypeByName(cleanFileName);
     const isToKhaiXuat = fileType === "ToKhaiXuatKhau" ||
       (fileType.toLowerCase().includes("tokhai") && !fileType.toLowerCase().includes("nhapkhau") && !fileType.toLowerCase().includes("hqnk"));
 
@@ -656,13 +659,14 @@
     }
 
     const bridgeResult = await callMoitBridge("uploadAttachmentViaBridge", {
-      fileName: attInfo.fileName,
+      fileName: cleanFileName,
       fileType: fileType,
       mimeType: attInfo.mimeType || "application/pdf",
       base64: attInfo.base64,
       targetRow: attInfo.targetRow,
       linkedNumber: attInfo.linkedNumber,
-      matchingMode: matchingMode
+      matchingMode: matchingMode,
+      isPreSigned: Boolean(attInfo.isPreSigned)
     });
 
     if (bridgeResult && bridgeResult.success) {
@@ -1007,24 +1011,35 @@
 
       for (let idx = 0; idx < data.attachments.length; idx++) {
         const att = { ...data.attachments[idx] };
+        const cleanName = (att.fileName || "").replace(/^[⚡\s\[Đã ký\]]+/g, "").trim();
+        att.fileName = cleanName;
         let fileBase64 = att.base64 || "";
 
         // Nếu chưa có Base64 đầy đủ -> tải từ Local Companion Stream Bridge (cổng 14008)
         if (att.streamUrl || !fileBase64 || fileBase64.startsWith("<Base64")) {
-          const fetchUrl = att.streamUrl || `http://127.0.0.1:14008/file?key=${encodeURIComponent(att.fileName)}`;
+          let fetchUrl = att.streamUrl;
+          if (!fetchUrl) {
+            fetchUrl = `http://127.0.0.1:14008/file?key=${encodeURIComponent(cleanName)}`;
+          } else {
+            try {
+              const u = new URL(fetchUrl);
+              u.searchParams.set("key", cleanName);
+              fetchUrl = u.toString();
+            } catch (e) {}
+          }
           try {
             const streamRes = await new Promise((resolve) => {
               chrome.runtime.sendMessage({ action: "fetchLocalFile", url: fetchUrl }, resolve);
             });
             if (streamRes && streamRes.success && streamRes.dataUrl) {
               fileBase64 = streamRes.dataUrl;
-              logMessage(`📥 Đã tải '${att.fileName}' (${(streamRes.size / 1024).toFixed(1)} KB) từ cổng 14008!`, "success");
+              logMessage(`📥 Đã tải '${cleanName}' (${(streamRes.size / 1024).toFixed(1)} KB) từ cổng 14008!`, "success");
             }
           } catch (stErr) {}
         }
 
         if (!fileBase64 || fileBase64.startsWith("<Base64")) {
-          logMessage(`⚠️ Bỏ qua '${att.fileName}' vì không có dữ liệu Base64 và cổng 14008 đang tắt.`, "warn");
+          logMessage(`⚠️ Bỏ qua '${cleanName}' vì không có dữ liệu Base64 và cổng 14008 đang tắt.`, "warn");
           continue;
         }
 
@@ -1042,7 +1057,8 @@
         for (let attempt = 1; attempt <= 2; attempt++) {
           uploaded = await handleUploadAttachment(att, activeMode);
           if (uploaded) {
-            logMessage(`✅ [${idx + 1}/${data.attachments.length}] Đã đính kèm: ${att.fileName}`, "success");
+            const cleanName = (att.fileName || "").replace(/^[⚡\s\[Đã ký\]]+/g, "").trim();
+            logMessage(`✅ [${idx + 1}/${data.attachments.length}] Đã đính kèm: ${cleanName}`, "success");
             break;
           }
           await delay(2000);

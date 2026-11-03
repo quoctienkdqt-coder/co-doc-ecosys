@@ -159,14 +159,22 @@ class UpdateApplyWorker(QThread):
                 self.progress_signal.emit(20, f"Phát hiện file cài đặt mới trên GitHub Release: {os.path.basename(exe_url)}")
                 installer_name = os.path.basename(exe_url)
                 dest_installer = os.path.join(workspace_dir, installer_name)
-                self.progress_signal.emit(40, f"Đang tải {installer_name} về máy...")
+                self.progress_signal.emit(40, f"Đang tải an toàn {installer_name}...")
                 req = urllib.request.Request(exe_url, headers={"User-Agent": "Mozilla/5.0"})
                 with urllib.request.urlopen(req, timeout=120) as resp, open(dest_installer, 'wb') as out_f:
                     shutil.copyfileobj(resp, out_f)
 
+                # Xác minh an toàn tệp thực thi PE Windows (chống giả mạo)
+                if not os.path.exists(dest_installer) or os.path.getsize(dest_installer) < 1024 * 1024:
+                    raise ValueError("Tệp cài đặt tải về không hợp lệ hoặc kích thước quá nhỏ!")
+                with open(dest_installer, "rb") as check_f:
+                    magic = check_f.read(2)
+                    if magic != b'MZ':
+                        raise ValueError("Tệp tải về không phải định dạng thực thi PE Windows an toàn!")
+
                 self.progress_signal.emit(90, "Đang khởi chạy trình cài đặt mới...")
-                # Chạy trình cài đặt mới và thoát
-                subprocess.Popen([dest_installer], shell=True)
+                # Chạy an toàn KHÔNG dùng shell=True để chống injection
+                subprocess.Popen([dest_installer], shell=False)
                 self.progress_signal.emit(100, "Đã khởi chạy bộ cài đặt mới!")
                 self.finished_signal.emit(True, f"Đã tải xong bộ cài đặt mới:\n{dest_installer}\n\nTrình cài đặt đang được mở để tự động cập nhật hệ thống.")
                 return
@@ -196,50 +204,104 @@ class UpdateApplyWorker(QThread):
 
             self.progress_signal.emit(25, f"Đang kết nối tải mã nguồn từ: {zip_url}...")
 
-            # Tạo bản sao lưu an toàn
+            # Tạo bản sao lưu toàn diện cây thư mục (Full-Tree Backup)
             ts = datetime.now().strftime("%Y%m%d_%H%M%S")
             backup_folder = os.path.join(backup_base, f"backup_{ts}")
             os.makedirs(backup_folder, exist_ok=True)
-            self.progress_signal.emit(40, f"Đang tạo bản sao lưu an toàn tại: backups_update/backup_{ts}...")
+            self.progress_signal.emit(35, f"Đang tạo bản sao lưu toàn diện tại: backups_update/backup_{ts}...")
 
+            exclude_dirs = {"backups_update", ".git", "__pycache__", "venv", "dist", "build", "debug_profile"}
             for item in os.listdir(workspace_dir):
-                if item in ["backups_update", ".git", "__pycache__", "venv", "dist", "build"]:
+                if item in exclude_dirs or item.endswith(".tmp") or item.endswith(".zip"):
                     continue
                 s = os.path.join(workspace_dir, item)
                 d = os.path.join(backup_folder, item)
-                if os.path.isfile(s):
-                    shutil.copy2(s, d)
+                try:
+                    if os.path.isdir(s):
+                        shutil.copytree(s, d, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+                    elif os.path.isfile(s):
+                        shutil.copy2(s, d)
+                except Exception as copy_err:
+                    print(f"Warning backup item {item}: {copy_err}")
 
             # Tải tệp zip về tạm
             temp_zip = os.path.join(workspace_dir, "temp_update.zip")
+            staging_dir = os.path.join(workspace_dir, f"staging_update_{ts}")
             req = urllib.request.Request(
                 zip_url,
                 headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
             )
 
-            self.progress_signal.emit(60, "Đang tải gói cập nhật mã nguồn...")
+            self.progress_signal.emit(55, "Đang tải gói cập nhật mã nguồn an toàn...")
             with urllib.request.urlopen(req, timeout=30) as response, open(temp_zip, 'wb') as out_file:
                 shutil.copyfileobj(response, out_file)
 
-            self.progress_signal.emit(80, "Đang giải nén và cập nhật các tệp ứng dụng...")
-            with zipfile.ZipFile(temp_zip, 'r') as zip_ref:
-                root_in_zip = zip_ref.namelist()[0].split('/')[0]
-                for member in zip_ref.namelist():
-                    if member.endswith("/"):
-                        continue
-                    rel_path = member[len(root_in_zip) + 1:]
-                    if not rel_path:
-                        continue
-                    # Bỏ qua tệp cấu hình cá nhân để giữ nguyên API Key
-                    if rel_path in ["settings.json"]:
-                        continue
-                    target_path = os.path.join(workspace_dir, rel_path)
-                    os.makedirs(os.path.dirname(target_path), exist_ok=True)
-                    with zip_ref.open(member) as src_f, open(target_path, "wb") as dst_f:
-                        shutil.copyfileobj(src_f, dst_f)
+            self.progress_signal.emit(75, "Đang xác minh bảo mật và giải nén qua Staging cách ly...")
+            os.makedirs(staging_dir, exist_ok=True)
+            norm_workspace = os.path.normpath(os.path.abspath(workspace_dir))
+            norm_staging = os.path.normpath(os.path.abspath(staging_dir))
 
-            if os.path.exists(temp_zip):
-                os.remove(temp_zip)
+            try:
+                with zipfile.ZipFile(temp_zip, 'r') as zip_ref:
+                    members = zip_ref.namelist()
+                    root_in_zip = members[0].split('/')[0] if members else ""
+
+                    for member in members:
+                        if member.endswith("/"):
+                            continue
+                        rel_path = member[len(root_in_zip) + 1:] if root_in_zip and member.startswith(root_in_zip + "/") else member
+                        if not rel_path or rel_path.startswith("/") or ".." in rel_path:
+                            continue
+
+                        # Bảo tồn file cấu hình
+                        if rel_path in ["settings.json"]:
+                            continue
+
+                        # Chống lỗ hổng Zip Slip (Kiểm tra đường dẫn sau chuẩn hóa)
+                        stage_dest = os.path.normpath(os.path.join(staging_dir, rel_path))
+                        if not stage_dest.startswith(norm_staging):
+                            raise ValueError(f"Cảnh báo bảo mật: Tệp '{member}' vi phạm kiểm tra an toàn Zip Slip!")
+
+                        os.makedirs(os.path.dirname(stage_dest), exist_ok=True)
+                        with zip_ref.open(member) as src_f, open(stage_dest, "wb") as dst_f:
+                            shutil.copyfileobj(src_f, dst_f)
+
+                # Bước áp dụng nguyên tử (Atomic Copy) từ Staging vào Workspace
+                self.progress_signal.emit(90, "Đang áp dụng phiên bản cập nhật...")
+                for root_s, dirs_s, files_s in os.walk(staging_dir):
+                    rel_sub = os.path.relpath(root_s, staging_dir)
+                    dest_sub = workspace_dir if rel_sub == "." else os.path.join(workspace_dir, rel_sub)
+                    dest_sub_norm = os.path.normpath(os.path.abspath(dest_sub))
+                    if not dest_sub_norm.startswith(norm_workspace):
+                        raise ValueError(f"Đường dẫn ghi đè không hợp lệ: {dest_sub_norm}")
+
+                    os.makedirs(dest_sub_norm, exist_ok=True)
+                    for f in files_s:
+                        f_stage = os.path.join(root_s, f)
+                        f_dest = os.path.join(dest_sub_norm, f)
+                        shutil.copy2(f_stage, f_dest)
+
+            except Exception as update_err:
+                # Cơ chế Rollback tự động phục hồi nếu có sự cố
+                self.progress_signal.emit(40, "⚠️ Có lỗi xảy ra. Đang tự động khôi phục (Rollback) từ bản sao lưu...")
+                try:
+                    for root_b, dirs_b, files_b in os.walk(backup_folder):
+                        rel_b = os.path.relpath(root_b, backup_folder)
+                        dest_b = workspace_dir if rel_b == "." else os.path.join(workspace_dir, rel_b)
+                        os.makedirs(dest_b, exist_ok=True)
+                        for fb in files_b:
+                            shutil.copy2(os.path.join(root_b, fb), os.path.join(dest_b, fb))
+                except Exception as rb_err:
+                    print(f"Rollback error: {rb_err}")
+                raise update_err
+            finally:
+                if os.path.exists(staging_dir):
+                    shutil.rmtree(staging_dir, ignore_errors=True)
+                if os.path.exists(temp_zip):
+                    try:
+                        os.remove(temp_zip)
+                    except Exception:
+                        pass
 
             self.progress_signal.emit(100, "Cập nhật thành công 100%!")
             self.finished_signal.emit(
