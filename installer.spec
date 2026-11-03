@@ -1,4 +1,8 @@
 # -*- mode: python ; coding: utf-8 -*-
+import json
+with open('version.json', encoding='utf-8') as _vf:
+    APP_VERSION = json.load(_vf)['version']
+
 datas = [
     ('installer/app_bundle.zip', '.'),
     ('assets', 'assets')
@@ -40,7 +44,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name='CaiDat_XNK_eCoSys_SC_v3.1',
+    name=f'CaiDat_XNK_eCoSys_SC_v{APP_VERSION}',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

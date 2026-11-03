@@ -44,6 +44,11 @@ def main():
     start_time = time.time()
     base_dir = os.path.dirname(os.path.abspath(__file__))
     os.chdir(base_dir)
+    import json
+    with open("version.json", encoding="utf-8") as vf:
+        ver = json.load(vf)["version"]
+    setup_name = f"CaiDat_XNK_eCoSys_SC_v{ver}.exe"
+    portable_name = f"XNK_eCoSys_SC_v{ver}_Portable.zip"
 
     log("==================================================================")
     log(" BẮT ĐẦU ĐÓNG GÓI HỆ THỐNG XNK & THỦY SẢN TOÀN DIỆN v3.1")
@@ -81,14 +86,14 @@ def main():
     log("BƯỚC 2/3: Đang đóng gói tệp nén dung lượng nhẹ...")
     os.makedirs("installer", exist_ok=True)
     app_bundle_zip = os.path.join("installer", "app_bundle.zip")
-    portable_zip = os.path.join("dist", "XNK_eCoSys_SC_v3.1_Portable.zip")
+    portable_zip = os.path.join("dist", portable_name)
 
     zip_directory(app_dir, app_bundle_zip)
     shutil.copy2(app_bundle_zip, portable_zip)
     log(f"✅ Đã tạo gói Portable chạy ngay: {portable_zip}")
 
     # 3. Build Setup Wizard
-    log("BƯỚC 3/3: Đang biên dịch Trình cài đặt tự động (CaiDat_XNK_eCoSys_SC_v3.1.exe)...")
+    log(f"BƯỚC 3/3: Đang biên dịch Trình cài đặt tự động ({setup_name})...")
     cmd_build_installer = [
         sys.executable, "-m", "PyInstaller",
         "installer.spec",
@@ -100,13 +105,13 @@ def main():
         log("❌ LỖI KHI BUILD TRÌNH CÀI ĐẶT SETUP!")
         sys.exit(1)
 
-    setup_exe = os.path.join(base_dir, "dist", "CaiDat_XNK_eCoSys_SC_v3.1.exe")
+    setup_exe = os.path.join(base_dir, "dist", setup_name)
     if not os.path.exists(setup_exe):
         log(f"❌ Không tìm thấy file cài đặt: {setup_exe}")
         sys.exit(1)
 
     # Copy installer to root directory for easy access
-    root_setup = os.path.join(base_dir, "CaiDat_XNK_eCoSys_SC_v3.1.exe")
+    root_setup = os.path.join(base_dir, setup_name)
     shutil.copy2(setup_exe, root_setup)
 
     setup_size = os.path.getsize(root_setup) / (1024 * 1024)
