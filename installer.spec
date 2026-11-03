@@ -5,7 +5,8 @@ with open('version.json', encoding='utf-8') as _vf:
 
 datas = [
     ('installer/app_bundle.zip', '.'),
-    ('assets', 'assets')
+    ('assets', 'assets'),
+    ('version.json', '.')
 ]
 binaries = []
 hiddenimports = [

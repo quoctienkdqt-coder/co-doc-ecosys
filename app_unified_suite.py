@@ -17,9 +17,17 @@ import os
 
 # Cho phép nạp các file mã nguồn .py cập nhật trực tiếp từ thư mục làm việc (Hỗ trợ Live-Update qua GitHub)
 app_exec_dir = os.path.dirname(os.path.abspath(sys.argv[0]))
-for _p in [app_exec_dir, os.path.join(app_exec_dir, "co_core"), os.path.join(app_exec_dir, "sc_core")]:
-    if _p and os.path.exists(_p) and _p not in sys.path:
-        sys.path.insert(0, _p)
+# Chạy từ mã nguồn: cho phép nạp module co_core/sc_core cạnh file chính.
+# Bản .exe đóng gói: KHÔNG nạp file .py nằm cạnh .exe (tránh file cũ sót lại làm lẫn phiên bản) — cập nhật qua bộ cài.
+if not getattr(sys, "frozen", False):
+    for _p in [app_exec_dir, os.path.join(app_exec_dir, "co_core"), os.path.join(app_exec_dir, "sc_core")]:
+        if _p and os.path.exists(_p) and _p not in sys.path:
+            sys.path.insert(0, _p)
+else:
+    _internal = getattr(sys, "_MEIPASS", "")
+    for _p in [os.path.join(_internal, "co_core"), os.path.join(_internal, "sc_core")]:
+        if os.path.isdir(_p) and _p not in sys.path:
+            sys.path.append(_p)
 
 import json
 import subprocess

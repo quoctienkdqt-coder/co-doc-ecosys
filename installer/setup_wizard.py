@@ -37,6 +37,128 @@ def get_bundle_zip_path():
     return zip_path
 
 
+APP_EXE_NAME = "XNK_eCoSys_SC.exe"
+SHORTCUT_NAMES = ["XNK & Thủy Sản Toàn Diện.lnk", "XNK - eCoSys & Thuy San SC.lnk"]
+# Dữ liệu người dùng trong thư mục cài đặt: giữ nguyên khi cập nhật
+KEEP_ON_UPDATE = {"cache", "KetQua_DoiChieu", "backups_update", "settings.json"}
+CREATE_NO_WINDOW = 0x08000000
+
+
+def get_bundle_version():
+    """Số phiên bản của gói cài đặt (đọc version.json đóng kèm bộ cài)."""
+    import json
+    base_dir = getattr(sys, '_MEIPASS', os.path.dirname(os.path.abspath(__file__)))
+    for p in (os.path.join(base_dir, "version.json"), os.path.join(os.path.dirname(base_dir), "version.json")):
+        try:
+            with open(p, "r", encoding="utf-8") as f:
+                return json.load(f).get("version", "")
+        except Exception:
+            continue
+    return ""
+
+
+def parse_cli_args():
+    """--update (chế độ cập nhật tự động) ; --target <thư mục đang cài>"""
+    args = sys.argv[1:]
+    opts = {"update": "--update" in args, "target": "", "no_shortcuts": "--no-shortcuts" in args}
+    if "--target" in args:
+        i = args.index("--target")
+        if i + 1 < len(args):
+            opts["target"] = args[i + 1].strip().strip('"')
+    return opts
+
+
+def _shortcut_target(lnk_path):
+    try:
+        import win32com.client
+        ws = win32com.client.Dispatch("WScript.Shell")
+        return ws.CreateShortcut(lnk_path).TargetPath or ""
+    except Exception:
+        return ""
+
+
+def find_existing_install_dir():
+    """Tìm thư mục đã cài bản cũ qua shortcut ngoài Desktop / Start Menu (người dùng có thể đã cài ở chỗ khác)."""
+    for d in get_real_desktop_paths() + get_real_start_menu_paths():
+        for name in SHORTCUT_NAMES:
+            lnk = os.path.join(d, name)
+            if os.path.exists(lnk):
+                tgt = _shortcut_target(lnk)
+                if tgt and os.path.basename(tgt).lower() == APP_EXE_NAME.lower() and os.path.exists(tgt):
+                    return os.path.dirname(tgt)
+    return ""
+
+
+def _app_pids(install_dir):
+    """PID các tiến trình XNK_eCoSys_SC.exe chạy từ ĐÚNG thư mục install_dir (không đụng bản ở thư mục khác)."""
+    target = os.path.normcase(os.path.abspath(os.path.join(install_dir, APP_EXE_NAME)))
+    ps = ("Get-Process -Name 'XNK_eCoSys_SC' -ErrorAction SilentlyContinue | "
+          "ForEach-Object { \"$($_.Id)|$($_.Path)\" }")
+    try:
+        out = subprocess.run(["powershell", "-NoProfile", "-Command", ps], capture_output=True, text=True,
+                             creationflags=CREATE_NO_WINDOW, timeout=20).stdout
+    except Exception:
+        return []
+    pids = []
+    for line in out.splitlines():
+        if "|" in line:
+            pid, path = line.split("|", 1)
+            if path.strip() and os.path.normcase(os.path.abspath(path.strip())) == target:
+                pids.append(pid.strip())
+    return pids
+
+
+def is_app_running(install_dir):
+    return bool(_app_pids(install_dir))
+
+
+def close_running_app(install_dir, timeout=20):
+    """Chờ phần mềm (ở thư mục cài đặt này) tự đóng — trình cập nhật đóng app sau khi mở bộ cài;
+    quá hạn thì buộc đóng đúng các tiến trình đó."""
+    import time
+    t0 = time.time()
+    while is_app_running(install_dir) and time.time() - t0 < timeout:
+        time.sleep(0.7)
+    pids = _app_pids(install_dir)
+    for pid in pids:
+        subprocess.run(["taskkill", "/PID", pid, "/F"], capture_output=True, creationflags=CREATE_NO_WINDOW)
+    if pids:
+        time.sleep(1.5)
+    return not is_app_running(install_dir)
+
+
+def move_old_files_to_backup(install_dir, log=print):
+    """
+    Chuyển file của bản cũ sang backups_update/truoc_cai_dat_<thời gian>/ để bản mới ghi đè sạch sẽ
+    (tránh sót file .py cũ do kiểu cập nhật mã nguồn trước đây làm lẫn phiên bản). Giữ nguyên dữ liệu người dùng.
+    Chỉ thực hiện khi thư mục đúng là thư mục cài phần mềm (có XNK_eCoSys_SC.exe).
+    """
+    import time
+    if not os.path.exists(os.path.join(install_dir, APP_EXE_NAME)):
+        return ""
+    backup_root = os.path.join(install_dir, "backups_update")
+    os.makedirs(backup_root, exist_ok=True)
+    # Chỉ giữ 1 bản sao lưu trước-cài-đặt gần nhất để tiết kiệm dung lượng
+    for old in os.listdir(backup_root):
+        if old.startswith("truoc_cai_dat_"):
+            shutil.rmtree(os.path.join(backup_root, old), ignore_errors=True)
+    dest = os.path.join(backup_root, "truoc_cai_dat_" + time.strftime("%Y%m%d_%H%M%S"))
+    os.makedirs(dest, exist_ok=True)
+    for name in os.listdir(install_dir):
+        if name in KEEP_ON_UPDATE:
+            continue
+        src = os.path.join(install_dir, name)
+        for attempt in range(6):  # file có thể còn bị khóa vài giây sau khi app đóng
+            try:
+                shutil.move(src, os.path.join(dest, name))
+                break
+            except Exception as e:
+                if attempt == 5:
+                    log(f"Không chuyển được {name}: {e}")
+                time.sleep(1)
+    return dest
+
+
 def get_real_desktop_paths():
     """
     Trả về danh sách các thư mục Desktop khả dĩ trên máy Windows (bao gồm cả OneDrive nếu có).
@@ -198,8 +320,17 @@ class InstallWorker(QThread):
                 self.finished_signal.emit(False, f"Không tìm thấy gói cài đặt: {self.zip_path}")
                 return
 
-            self.progress_signal.emit(5, "Đang chuẩn bị thư mục cài đặt...")
+            self.progress_signal.emit(3, "Đang đóng phần mềm (nếu đang mở) để cập nhật...")
+            if is_app_running(self.install_dir) and not close_running_app(self.install_dir):
+                self.finished_signal.emit(False, "Phần mềm vẫn đang mở và không thể tự đóng.\n"
+                                                 "Vui lòng tắt phần mềm rồi bấm 'Thử Lại'.")
+                return
+
+            self.progress_signal.emit(6, "Đang chuẩn bị thư mục cài đặt...")
             os.makedirs(self.install_dir, exist_ok=True)
+            backup = move_old_files_to_backup(self.install_dir)
+            if backup:
+                self.progress_signal.emit(9, f"Đã sao lưu bản cũ vào: {backup}")
 
             with zipfile.ZipFile(self.zip_path, 'r') as zf:
                 file_list = zf.infolist()
@@ -209,7 +340,15 @@ class InstallWorker(QThread):
                     return
 
                 for idx, member in enumerate(file_list):
-                    zf.extract(member, self.install_dir)
+                    for attempt in range(5):  # ghi đè, thử lại nếu file còn bị khóa
+                        try:
+                            zf.extract(member, self.install_dir)
+                            break
+                        except PermissionError:
+                            if attempt == 4:
+                                raise
+                            import time
+                            time.sleep(1)
                     pct = int(10 + (idx / total_files) * 80)
                     if idx % 15 == 0 or idx == total_files - 1:
                         self.progress_signal.emit(pct, f"Đang giải nén: {os.path.basename(member.filename)}...")
@@ -274,7 +413,9 @@ class InstallWorker(QThread):
 class SetupWizard(QDialog):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Cài Đặt Phần Mềm - XNK & Thủy Sản Toàn Diện v3.0")
+        self.version = get_bundle_version() or "3"
+        self.cli = parse_cli_args()
+        self.setWindowTitle(f"Cài Đặt Phần Mềm - XNK & Thủy Sản Toàn Diện v{self.version}")
         self.resize(620, 520)
         self.setFixedSize(620, 520)
 
@@ -288,10 +429,21 @@ class SetupWizard(QDialog):
         self.icon_path = icon_path
 
         local_app_data = os.environ.get('LOCALAPPDATA', os.path.expanduser('~'))
-        self.default_install_dir = os.path.join(local_app_data, "Programs", "XNK_eCoSys_SC")
+        std_dir = os.path.join(local_app_data, "Programs", "XNK_eCoSys_SC")
+        # Ưu tiên: thư mục do trình cập nhật truyền vào -> thư mục bản cũ (theo shortcut) -> mặc định
+        existing = self.cli["target"] if self.cli["target"] and os.path.isdir(self.cli["target"]) else ""
+        existing = existing or find_existing_install_dir()
+        if not existing and os.path.exists(os.path.join(std_dir, APP_EXE_NAME)):
+            existing = std_dir
+        self.is_upgrade = bool(existing)
+        self.default_install_dir = existing or std_dir
         self.installed_exe_path = None
 
         self.init_ui()
+        if self.cli["update"] and self.is_upgrade:
+            # Mở từ trình cập nhật trong phần mềm: tự cài đè luôn, không cần bấm
+            from PyQt6.QtCore import QTimer
+            QTimer.singleShot(600, self.start_install)
 
     def init_ui(self):
         # Global stylesheet scoped carefully so it does NOT corrupt children
@@ -385,14 +537,14 @@ class SetupWizard(QDialog):
         lbl_title.setStyleSheet("font-size: 16px; font-weight: bold; color: #ffffff; background: transparent; border: none;")
         banner_text_col.addWidget(lbl_title)
 
-        lbl_sub = QLabel("Phiên bản v3.0 • Khai báo C/O eCoSys & Đối chiếu SC Cảng cá (IUU)")
+        lbl_sub = QLabel(f"Phiên bản v{self.version} • Khai báo C/O eCoSys & Đối chiếu SC Cảng cá (IUU)")
         lbl_sub.setStyleSheet("font-size: 12.5px; color: #bae6fd; background: transparent; border: none;")
         banner_text_col.addWidget(lbl_sub)
 
         banner_layout.addLayout(banner_text_col, stretch=1)
 
         # Version Pill Badge
-        lbl_badge = QLabel("v3.0 Official")
+        lbl_badge = QLabel(f"v{self.version}")
         lbl_badge.setStyleSheet("""
             background-color: rgba(255, 255, 255, 0.15);
             color: #ffffff;
@@ -412,10 +564,13 @@ class SetupWizard(QDialog):
         body_layout.setContentsMargins(24, 0, 24, 0)
         body_layout.setSpacing(12)
 
-        lbl_intro = QLabel(
-            "Trình cài đặt sẽ thiết lập toàn bộ hệ thống vào máy tính của bạn.\n"
-            "Phần mềm chạy hoàn toàn độc lập, không yêu cầu cài đặt Python hay thư viện nào khác."
-        )
+        if self.is_upgrade:
+            intro_txt = (f"Đã tìm thấy bản đang cài tại thư mục bên dưới — sẽ CẬP NHẬT GHI ĐÈ lên v{self.version}.\n"
+                         "Phần mềm đang mở sẽ được tự đóng; bản cũ được sao lưu, dữ liệu (cache, kết quả) giữ nguyên.")
+        else:
+            intro_txt = ("Trình cài đặt sẽ thiết lập toàn bộ hệ thống vào máy tính của bạn.\n"
+                         "Phần mềm chạy hoàn toàn độc lập, không yêu cầu cài đặt Python hay thư viện nào khác.")
+        lbl_intro = QLabel(intro_txt)
         lbl_intro.setStyleSheet("font-size: 12.5px; color: #475569; line-height: 1.4; border: none; background: transparent;")
         body_layout.addWidget(lbl_intro)
 
@@ -513,7 +668,7 @@ class SetupWizard(QDialog):
         self.btn_cancel.clicked.connect(self.reject)
         footer.addWidget(self.btn_cancel)
 
-        self.btn_install = QPushButton("🚀 Cài Đặt Ngay")
+        self.btn_install = QPushButton("🚀 Cập Nhật Ngay" if self.is_upgrade else "🚀 Cài Đặt Ngay")
         self.btn_install.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_install.setStyleSheet("""
             QPushButton {
@@ -554,6 +709,15 @@ class SetupWizard(QDialog):
             QMessageBox.critical(self, "Lỗi", f"Không tìm thấy gói tệp nén cài đặt: {zip_path}")
             return
 
+        if not self.cli["update"] and is_app_running(install_dir):
+            ans = QMessageBox.question(
+                self, "Phần mềm đang mở",
+                "Phần mềm XNK & Thủy Sản đang mở. Cần đóng phần mềm để ghi đè bản mới.\n\n"
+                "Đóng phần mềm và tiếp tục cập nhật?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.Yes)
+            if ans != QMessageBox.StandardButton.Yes:
+                return
+
         self.btn_install.setEnabled(False)
         self.btn_cancel.setEnabled(False)
         self.btn_install.setText("⏳ Đang cài đặt...")
@@ -563,8 +727,8 @@ class SetupWizard(QDialog):
         self.worker = InstallWorker(
             zip_path=zip_path,
             install_dir=install_dir,
-            create_desktop=self.chk_desktop.isChecked(),
-            create_start=self.chk_start.isChecked()
+            create_desktop=self.chk_desktop.isChecked() and not self.cli["no_shortcuts"],
+            create_start=self.chk_start.isChecked() and not self.cli["no_shortcuts"]
         )
         self.worker.progress_signal.connect(self.on_progress)
         self.worker.finished_signal.connect(self.on_finished)
@@ -584,11 +748,13 @@ class SetupWizard(QDialog):
             self.btn_cancel.setVisible(False)
             self.lbl_status.setText("Cài đặt thành công 100%! Đã tạo biểu tượng ngoài màn hình Desktop.")
 
-            QMessageBox.information(
-                self, "Cài Đặt Thành Công",
-                "Chúc mừng! Phần mềm XNK & Thủy Sản Toàn Diện v3.0 đã được cài đặt thành công.\n\n"
-                "Biểu tượng đã được tạo ngoài màn hình Desktop."
-            )
+            if not self.cli["update"]:
+                QMessageBox.information(
+                    self, "Cài Đặt Thành Công",
+                    f"Phần mềm XNK & Thủy Sản Toàn Diện v{self.version} đã được "
+                    f"{'cập nhật' if self.is_upgrade else 'cài đặt'} thành công.\n\n"
+                    f"Thư mục: {os.path.dirname(exe_or_err)}"
+                )
             if self.chk_launch.isChecked():
                 self.launch_installed_app()
                 self.accept()

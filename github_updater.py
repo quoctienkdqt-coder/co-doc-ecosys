@@ -30,15 +30,44 @@ def get_app_dir() -> str:
     return os.path.dirname(os.path.abspath(__file__))
 
 
+def _version_candidates():
+    """Các vị trí có thể chứa version.json (PyInstaller 6 đặt dữ liệu trong thư mục con _internal)."""
+    app_dir = get_app_dir()
+    cands = [os.path.join(app_dir, "_internal", "version.json")]
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        cands.append(os.path.join(meipass, "version.json"))
+    cands += [os.path.join(app_dir, "version.json"),
+              os.path.join(os.path.dirname(os.path.abspath(__file__)), "version.json")]
+    seen, out = set(), []
+    for c in cands:
+        k = os.path.normcase(os.path.abspath(c))
+        if k not in seen:
+            seen.add(k)
+            out.append(c)
+    return out
+
+
+def version_tuple(v) -> Tuple[int, ...]:
+    """'v3.10.1' -> (3, 10, 1) để so sánh đúng theo số (không so chuỗi)."""
+    import re as _re
+    return tuple(int(x) for x in _re.findall(r"\d+", str(v or ""))[:4]) or (0,)
+
+
 def get_local_version_info() -> Dict[str, Any]:
-    """Đọc thông tin phiên bản hiện tại từ version.json"""
-    v_path = os.path.join(get_app_dir(), "version.json")
-    if os.path.exists(v_path):
-        try:
-            with open(v_path, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
-            pass
+    """Đọc thông tin phiên bản hiện tại từ version.json (lấy bản có số phiên bản cao nhất nếu có nhiều bản)."""
+    best = None
+    for v_path in _version_candidates():
+        if os.path.exists(v_path):
+            try:
+                with open(v_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if best is None or version_tuple(data.get("version")) > version_tuple(best.get("version")):
+                    best = data
+            except Exception:
+                pass
+    if best:
+        return best
     return {
         "version": "3.1.0",
         "app_name": "Hệ Thống Quản Trị Xuất Nhập Khẩu & Thủy Sản Toàn Diện",
@@ -158,7 +187,11 @@ class UpdateApplyWorker(QThread):
             if exe_url and exe_url.endswith(".exe"):
                 self.progress_signal.emit(20, f"Phát hiện file cài đặt mới trên GitHub Release: {os.path.basename(exe_url)}")
                 installer_name = os.path.basename(exe_url)
-                dest_installer = os.path.join(workspace_dir, installer_name)
+                # Tải vào thư mục tạm (không để file cài đặt ~200MB nằm trong thư mục phần mềm)
+                import tempfile
+                dl_dir = os.path.join(tempfile.gettempdir(), "XNK_eCoSys_SC_update")
+                os.makedirs(dl_dir, exist_ok=True)
+                dest_installer = os.path.join(dl_dir, installer_name)
                 self.progress_signal.emit(40, f"Đang tải an toàn {installer_name}...")
                 req = urllib.request.Request(exe_url, headers={"User-Agent": "Mozilla/5.0"})
                 with urllib.request.urlopen(req, timeout=120) as resp, open(dest_installer, 'wb') as out_f:
@@ -173,11 +206,25 @@ class UpdateApplyWorker(QThread):
                         raise ValueError("Tệp tải về không phải định dạng thực thi PE Windows an toàn!")
 
                 self.progress_signal.emit(90, "Đang khởi chạy trình cài đặt mới...")
-                # Chạy an toàn KHÔNG dùng shell=True để chống injection
-                subprocess.Popen([dest_installer], shell=False)
+                # Truyền thư mục đang cài để bộ cài GHI ĐÈ đúng chỗ; chạy an toàn KHÔNG dùng shell=True
+                args = [dest_installer, "--update"]
+                if getattr(sys, "frozen", False):
+                    args += ["--target", workspace_dir]
+                subprocess.Popen(args, shell=False)
+                self.launched_installer = True
                 self.progress_signal.emit(100, "Đã khởi chạy bộ cài đặt mới!")
-                self.finished_signal.emit(True, f"Đã tải xong bộ cài đặt mới:\n{dest_installer}\n\nTrình cài đặt đang được mở để tự động cập nhật hệ thống.")
+                self.finished_signal.emit(
+                    True,
+                    "Đã tải xong bộ cài đặt mới.\n\n"
+                    "👉 Phần mềm sẽ TỰ ĐÓNG để bộ cài ghi đè phiên bản mới, sau đó tự mở lại.")
                 return
+
+            # Bản .exe đóng gói: KHÔNG chép đè mã nguồn .py vào thư mục phần mềm (file chính đã đóng gói cứng,
+            # chép .py chỉ gây lẫn phiên bản) -> yêu cầu tải bộ cài từ GitHub Release.
+            if getattr(sys, "frozen", False):
+                raise RuntimeError(
+                    "Bản phát hành mới trên GitHub chưa đính kèm file cài đặt (.exe).\n"
+                    "Vui lòng liên hệ tác giả hoặc tải bộ cài mới tại mục Releases của kho GitHub.")
 
             # Trường hợp 2: Kiểm tra nếu là kho Git nội bộ (.git)
             dot_git = os.path.join(workspace_dir, ".git")
@@ -510,7 +557,7 @@ class GitHubUpdateDialog(QDialog):
         remote_v = str(data.get("version", "")).lstrip("v")
         cur_v = str(self.local_info.get("version", "3.1.0")).lstrip("v")
 
-        has_new = remote_v != cur_v and remote_v > cur_v
+        has_new = version_tuple(remote_v) > version_tuple(cur_v)
         changelog = data.get("changelog", ["Cập nhật và tối ưu hóa hệ thống"])
         cl_html = "".join([f"<li>{item}</li>" for item in changelog])
 
@@ -569,6 +616,14 @@ class GitHubUpdateDialog(QDialog):
         if success:
             QMessageBox.information(self, "Cập nhật hoàn tất", msg)
             self.accept()
+            if getattr(self.apply_worker, "launched_installer", False):
+                # Đóng phần mềm để giải phóng file .exe/.dll -> bộ cài mới ghi đè được
+                main_win = self.parent()
+                if main_win is not None:
+                    main_win.close()
+                else:
+                    from PyQt6.QtWidgets import QApplication
+                    QApplication.quit()
         else:
             self.btn_apply.setEnabled(True)
             QMessageBox.critical(self, "Lỗi cập nhật", msg)
