@@ -96,9 +96,11 @@ def normalize_sc_number(s):
 def _find_header(ws):
     """Tìm dòng tiêu đề bảng tàu cá và ánh xạ cột."""
     for row in ws.iter_rows(min_row=1, max_row=min(ws.max_row, 60)):
-        cells = {c.column: strip_vietnamese_accents(_s(c.value)) for c in row if c.value is not None}
+        # Gộp mọi khoảng trắng/xuống dòng thành 1 dấu cách ("Số \nđăng ký" -> "so dang ky")
+        cells = {c.column: re.sub(r"\s+", " ", strip_vietnamese_accents(_s(c.value)))
+                 for c in row if c.value is not None}
         txt = " | ".join(cells.values())
-        if "so dang" in txt.replace("\n", " ") and "chu tau" in txt.replace("\n", " "):
+        if "so dang" in txt and "chu tau" in txt:
             cm = {}
             for col, t in cells.items():
                 t = re.sub(r"\s+", " ", t)
@@ -137,9 +139,10 @@ def load_sc_excel(file_path):
             t = _s(c.value)
             if not sc_number and re.search(r"\d{3,6}\s*/\s*\d{4}\s*/\s*SC", t, re.I):
                 sc_number = t
-            if "Tổ chức, cá nhân đề nghị xác nhận" in t:
-                nxt = ws.cell(row=c.row, column=c.column + 1).value
-                company = _s(nxt)
+            if "Tổ chức, cá nhân đề nghị xác nhận" in t and not company:
+                # Tên công ty có thể nằm cùng ô (sau dấu ':') hoặc ở ô bên phải
+                after = t.split(":", 1)[1].strip() if ":" in t else ""
+                company = after or _s(ws.cell(row=c.row, column=c.column + 1).value)
 
     def get(r, key):
         col = cm.get(key)
@@ -148,8 +151,8 @@ def load_sc_excel(file_path):
     records, sheet_total = [], {}
     for r in range(hdr_row + 1, ws.max_row + 1):
         # dòng TOTAL
-        row_vals = [_s(ws.cell(row=r, column=c).value).upper() for c in range(1, ws.max_column + 1)]
-        if "TOTAL" in row_vals:
+        row_vals = [strip_vietnamese_accents(_s(ws.cell(row=r, column=c).value)) for c in range(1, ws.max_column + 1)]
+        if any(v in ("total", "tong", "total/tong", "tong/total", "tong cong") for v in row_vals):
             vals = {k: _to_float(get(r, k)) for k in ("req_catch_kg", "total_catch_kg")}
             sheet_total = vals
             break

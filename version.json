@@ -1,12 +1,14 @@
 {
-  "version": "3.2.1",
+  "version": "3.2.2",
   "app_name": "Hệ Thống Quản Trị Xuất Nhập Khẩu & Thủy Sản Toàn Diện (eCoSys C/O & Đối Chiếu SC)",
   "author": "Ngô Quốc Tiến",
   "contact": "Zalo: 0905387808",
   "ai_disclaimer": "AI chỉ mang tính tham khảo, mọi quyết định và kết quả đều do con người.",
   "github_repo": "https://github.com/quoctienkdqt-coder/co-doc-ecosys",
-  "release_date": "03/11/2026",
+  "release_date": "10/11/2026",
   "changelog": [
+    "v3.2.2: Sửa lỗi Đối chiếu SC báo 'Không tìm thấy bảng Thông tin tàu cá' với file SC Excel có tiêu đề cột xuống dòng (vd 'Số ↵ đăng ký tàu').",
+    "v3.2.2: SC Excel nhận dòng tổng ghi 'Tổng' / 'Total/Tổng' (trước chỉ nhận 'TOTAL'); đọc được tên công ty ghi cùng ô với nhãn.",
     "v3.2.1: Sửa trình cập nhật hiện sai phiên bản (luôn báo v3.1.0) và báo có bản mới mãi; so sánh phiên bản theo số.",
     "v3.2.1: Bộ cài tự tìm thư mục đang cài (qua shortcut), tự đóng phần mềm đang mở, sao lưu bản cũ rồi GHI ĐÈ đúng chỗ; cập nhật từ trong phần mềm sẽ tự cài và tự mở lại.",
     "Giao diện mới: bộ màu thống nhất, thẻ bo góc, menu trái thu/mở mượt (Ctrl+B), chuyển trang mờ dần, bảng cuộn mượt, hiển thị sắc nét ở màn hình 125–150%.",
