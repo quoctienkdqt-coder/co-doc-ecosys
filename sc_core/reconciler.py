@@ -1,3 +1,8 @@
+try:  # ghi lỗi bị bỏ qua vào loi_bo_qua.log (thay cho except: pass im lặng)
+    from nhat_ky_loi import ghi as _ghi_loi_bo_qua
+except Exception:  # pragma: no cover
+    def _ghi_loi_bo_qua(*_a, **_k):
+        return None
 import os
 import re
 import unicodedata
@@ -311,16 +316,21 @@ def reconcile_excel_vs_sc(excel_records, sc_input, sc_info=None):
         # SC: Lấy 'req_catch_kg' (Tổng khối lượng nguyên liệu mua từ tàu cá).
         sc_kg = sc.get('req_catch_kg') if sc.get('req_catch_kg') is not None else sc.get('total_catch_kg', 0.0)
         delta_kg = ex_kg - sc_kg
-        if abs(delta_kg) > 0.1:
+        # Quy tắc nghiệp vụ (người dùng chốt 21/11/2026): lô hàng ĐƯỢC dùng một phần lượng mua trên SC,
+        # chỉ sai khi XNNL VƯỢT lượng mua ghi trên SC.
+        if delta_kg > 0.1:
             rec_result['diffs'].append({
                 'field': 'Khối lượng nguyên liệu mua (kg)',
                 'excel_val': f"{ex_kg:,.1f}",
                 'sc_val': f"{sc_kg:,.1f}",
                 'delta': delta_kg,
                 'type': 'CRITICAL',
-                'message': f"Chênh lệch khối lượng mua: Excel ({ex_kg:,.1f} kg) vs SC gốc ({sc_kg:,.1f} kg), lệch: {delta_kg:+,.1f} kg"
+                'message': f"Khối lượng XNNL ({ex_kg:,.1f} kg) VƯỢT lượng mua trên SC gốc ({sc_kg:,.1f} kg), vượt: {delta_kg:+,.1f} kg"
             })
-            rec_result['action_needed'].append(f"Điều chỉnh khối lượng mua khớp với SC gốc: {sc_kg:,.1f} kg")
+            rec_result['action_needed'].append(f"Giảm khối lượng XNNL xuống tối đa {sc_kg:,.1f} kg (lượng mua trên SC)")
+        elif delta_kg < -0.1:
+            rec_result.setdefault('notes', []).append(
+                f"Dùng {ex_kg:,.0f}/{sc_kg:,.0f} kg lượng mua trên SC (còn {-delta_kg:,.0f} kg) - hợp lệ")
 
         # 7. Add internal validation errors from Excel
         for err in rec.get('validation_errors', []):
@@ -724,8 +734,11 @@ def reconcile_bang_ke_vs_sc(bang_ke_records, sc_repo):
                 sc_owner = sc_match.get('owner', '')
                 sc_weight = sc_match.get('req_catch_kg') if sc_match.get('req_catch_kg') is not None else sc_match.get('catch_weight', 0.0)
 
-                # 3. So khớp chủ tàu
-                owner_cmp = compare_strings_fuzzy(owner_bk, sc_owner)
+                # 3. So khớp chủ tàu. Bảng kê hay ghi "Chủ tàu/ Thuyền trưởng": SC ghi trùng 1 trong các tên là khớp.
+                cac_ten = [t.strip() for t in re.split(r"\s*/\s*", str(owner_bk or '')) if t.strip()] or [owner_bk]
+                kq_ten = [compare_strings_fuzzy(t, sc_owner) for t in cac_ten]
+                owner_cmp = 'EXACT_MATCH' if 'EXACT_MATCH' in kq_ten else (
+                    'ACCENT_DIFF' if 'ACCENT_DIFF' in kq_ten else 'MISMATCH')
                 if owner_cmp == 'ACCENT_DIFF':
                     diffs.append({
                         'field': 'Tên Chủ tàu',
@@ -735,12 +748,13 @@ def reconcile_bang_ke_vs_sc(bang_ke_records, sc_repo):
                         'message': f"Khớp tên chủ tàu (Bảng kê có dấu '{owner_bk}' vs SC không dấu '{sc_owner}')"
                     })
                 elif owner_cmp in ('SUBSTRING_MATCH', 'MISMATCH'):
+                    # Người dùng chốt (20/11/2026): tên khác SC = Sai lệch thật
                     diffs.append({
                         'field': 'Tên Chủ tàu',
                         'bk_val': owner_bk,
                         'sc_val': sc_owner,
-                        'type': 'WARNING',
-                        'message': f"Khác biệt tên chủ tàu: Bảng kê '{owner_bk}' vs SC '{sc_owner}'"
+                        'type': 'CRITICAL',
+                        'message': f"Khác tên chủ tàu: Bảng kê '{owner_bk}' vs SC '{sc_owner}'"
                     })
                     action_needed.append(f"Kiểm tra và chuẩn hóa tên chủ tàu theo SC: {sc_owner}")
 
@@ -797,6 +811,52 @@ def reconcile_bang_ke_vs_sc(bang_ke_records, sc_repo):
     return results, summary
 
 
+def xac_minh_ten_chu_tau_sc(sc_repo, ten_theo_tau, provider, api_key, base_url=None, log_cb=None):
+    """
+    Lớp 6 cho tên chủ tàu: AI hay đọc sai DẤU tiếng Việt trên bản scan (vd 'Thánh' -> 'Thành', 'Sắt' -> 'Sát').
+    Với mỗi dòng SC mà tên chỉ khác Bảng kê/XNNL ở dấu: cắt đúng dòng tàu trên SC, hỏi AI chọn cách viết đúng như ảnh.
+    ten_theo_tau: {vessel_key: set(tên ghi trong Bảng kê / XNNL)}. Sửa trực tiếp record SC. Trả số tên đã xác minh lại.
+    """
+    from sc_core.ai_extractor import xac_minh_ten, load_ai_config
+    cfg = load_ai_config()
+    if provider == "apiz":
+        key, model, b_url = api_key or cfg.get("apiz_api_key"), cfg.get("apiz_model") or "gemini-3.8-flash", \
+            base_url or cfg.get("apiz_base_url") or "https://api.apiz.vn/v1"
+    else:
+        key, model, b_url = api_key or cfg.get("gemini_api_key"), cfg.get("gemini_model") or "gemini-3.8-flash", None
+    if not key:
+        return 0
+    da_lam, n = set(), 0
+    for sc_key, pack in (sc_repo or {}).items():
+        fp = pack.get("file_path") if isinstance(pack, dict) else None
+        if not fp or not os.path.exists(fp):
+            continue
+        for r in pack.get("records") or []:
+            ma = (fp, r.get("vessel_id"), r.get("page"))
+            if ma in da_lam:
+                continue
+            ten_sc = str(r.get("owner") or "").strip()
+            khac_dau = sorted({t for t in ten_theo_tau.get(clean_vessel_key(r.get("vessel_id")), set())
+                               if t and t != ten_sc and compare_strings_fuzzy(t, ten_sc) == 'ACCENT_DIFF'})
+            if not ten_sc or not khac_dau:
+                continue
+            da_lam.add(ma)
+            try:
+                ten = xac_minh_ten(fp, r.get("page"), r.get("vessel_id"), [ten_sc] + khac_dau, provider, key, model, b_url)
+            except Exception as e:
+                ten = None
+                if log_cb: log_cb(f"Không xác minh được tên {r.get('vessel_id')}: {e}")
+            if ten and ten != ten_sc:
+                if log_cb: log_cb(f"🔎 {r.get('vessel_id')} (SC {r.get('sc_number')}): đọc lại tên trên ảnh cắt dòng -> '{ten}' (lần đầu AI đọc '{ten_sc}')")
+                # cùng 1 dict có thể nằm ở nhiều khóa sc_repo -> sửa trực tiếp
+                r["owner"] = ten
+                r.setdefault("da_doc_lai", []).append(f"owner: {ten_sc} -> {ten}")
+                n += 1
+            elif ten and log_cb:
+                log_cb(f"🔎 {r.get('vessel_id')}: xác nhận tên trên SC là '{ten_sc}'")
+    return n
+
+
 def reconcile_full_suite(bang_ke_file, invoices_dir, sc_sources, excel_xnnl_file=None,
                          use_ai=True, api_key='', api_source='official', api_base_url='',
                          do_merge=True, do_correct=True, progress_cb=None, log_cb=None):
@@ -829,6 +889,28 @@ def reconcile_full_suite(bang_ke_file, invoices_dir, sc_sources, excel_xnnl_file
         api_key=api_key,
         provider=prov
     )
+
+    # 0. Xác minh lại tên chủ tàu trên SC khi chỉ khác Bảng kê / XNNL ở dấu (AI hay đọc sai dấu trên bản scan)
+    if use_ai:
+        try:
+            ten_theo_tau = {}
+            for r in bk_records:
+                for t in re.split(r"\s*/\s*", str(r.get('owner') or '')):
+                    if t.strip():
+                        ten_theo_tau.setdefault(clean_vessel_key(r.get('vessel_id', '')), set()).add(t.strip())
+            _x = excel_xnnl_file if (excel_xnnl_file and os.path.exists(excel_xnnl_file)) else None
+            if _x:
+                try:
+                    _m, _raw, _ = load_excel_xnnl(_x)
+                    for r in _raw:
+                        if r.get('owner'):
+                            ten_theo_tau.setdefault(clean_vessel_key(r.get('vessel_id', '')), set()).add(str(r['owner']).strip())
+                except Exception:
+                    _ghi_loi_bo_qua()
+            if progress_cb: progress_cb(62, "Đang xác minh lại tên chủ tàu (dấu tiếng Việt) trên ảnh SC...")
+            xac_minh_ten_chu_tau_sc(sc_repo, ten_theo_tau, prov, api_key, api_base_url, log_cb)
+        except Exception as e:
+            if log_cb: log_cb(f"Bỏ qua bước xác minh tên: {e}")
 
     # 1. Bảng kê vs Hóa đơn
     if progress_cb: progress_cb(65, "Đang đối chiếu Bảng kê ↔ Hóa đơn VAT...")

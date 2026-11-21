@@ -33,7 +33,9 @@ hiddenimports = [
     'co_core.batch_signer',
     'local_stream_server',
     'batch_signer',
-    'github_updater'
+    'github_updater',
+    'nhat_ky_loi',
+    'cryptography.hazmat.primitives.asymmetric.ed25519',
 ]
 
 # Collect rapidocr_onnxruntime

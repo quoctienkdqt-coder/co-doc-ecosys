@@ -2,6 +2,11 @@
 Quản lý Cấu hình Tập trung & Bảo mật (Centralized Secure Config Manager)
 Đảm bảo API Key được lưu an toàn trong %APPDATA%, không bao giờ bị lưu trong mã nguồn hoặc gói ZIP
 """
+try:  # ghi lỗi bị bỏ qua vào loi_bo_qua.log (thay cho except: pass im lặng)
+    from nhat_ky_loi import ghi as _ghi_loi_bo_qua
+except Exception:  # pragma: no cover
+    def _ghi_loi_bo_qua(*_a, **_k):
+        return None
 import os
 import json
 
@@ -16,6 +21,31 @@ DEFAULT_SETTINGS = {
     "model_name": "gemini-3.8-flash",
     "target_form": "EUR.1"
 }
+
+
+# Cổng AI công ty (IT HAVUCO quản lý key Google): mọi lệnh gọi Google Gemini đi qua đây thay vì thẳng tới Google.
+# Cổng nhận API gốc Gemini (/v1beta/models/...:generateContent), key là key cổng "gw_..." do IT cấp.
+# APIZ (key cá nhân sk-...) KHÔNG đi qua cổng này.
+GOOGLE_AI_GATEWAY_MAC_DINH = "https://aigw.havuco.com"
+
+
+def google_gateway_url() -> str:
+    """Địa chỉ cổng cho key Google: biến môi trường GOOGLE_AI_GATEWAY_URL > settings 'google_gateway_url' > mặc định."""
+    url = os.environ.get("GOOGLE_AI_GATEWAY_URL", "").strip()
+    if not url:
+        try:
+            with open(SECURE_SETTINGS_FILE, "r", encoding="utf-8") as f:
+                url = str(json.load(f).get("google_gateway_url", "")).strip()
+        except Exception:
+            url = ""
+    return (url or GOOGLE_AI_GATEWAY_MAC_DINH).rstrip("/")
+
+
+def tao_google_client(api_key: str):
+    """Tạo google-genai Client trỏ về cổng AI công ty."""
+    from google import genai
+    from google.genai import types
+    return genai.Client(api_key=api_key, http_options=types.HttpOptions(base_url=google_gateway_url()))
 
 
 def get_secure_settings_path() -> str:
@@ -42,7 +72,7 @@ def load_secure_settings() -> dict:
                 settings.update(data)
                 loaded = True
         except Exception:
-            pass
+            _ghi_loi_bo_qua()
 
     # Nếu chưa có trong AppData, đọc từ file cục bộ (chuyển tiếp một lần)
     if not loaded and os.path.exists(LOCAL_TEMPLATE_SETTINGS):
@@ -53,7 +83,7 @@ def load_secure_settings() -> dict:
                 # Tự động di chuyển vào AppData bảo mật
                 save_secure_settings(settings)
         except Exception:
-            pass
+            _ghi_loi_bo_qua()
 
     # Đọc từ biến môi trường nếu key đang trống
     if not settings.get("api_key"):
@@ -80,7 +110,7 @@ def save_secure_settings(settings: dict) -> bool:
             with open(LOCAL_TEMPLATE_SETTINGS, "w", encoding="utf-8") as f:
                 json.dump(sanitized_template, f, ensure_ascii=False, indent=2)
         except Exception:
-            pass
+            _ghi_loi_bo_qua()
 
         return True
     except Exception as e:

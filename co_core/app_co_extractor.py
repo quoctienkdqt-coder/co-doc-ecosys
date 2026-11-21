@@ -1,3 +1,8 @@
+try:  # ghi lỗi bị bỏ qua vào loi_bo_qua.log (thay cho except: pass im lặng)
+    from nhat_ky_loi import ghi as _ghi_loi_bo_qua
+except Exception:  # pragma: no cover
+    def _ghi_loi_bo_qua(*_a, **_k):
+        return None
 import sys
 import os
 
@@ -964,21 +969,28 @@ class UserGuideDialog(QDialog):
             <b>💡 Mục đích nghiệp vụ:</b> Thẩm định và đối chiếu tính hợp pháp của nguyên liệu thủy sản khai thác giữa <b>Bản scan Giấy xác nhận SC gốc (Mẫu 01 Cảng cá)</b> và <b>File Excel xuất từ Phần mềm sản xuất (PMSX - Phụ lục 02a)</b> nhằm chống khai thác IUU và phục vụ cấp Giấy chứng nhận xuất xứ C/O Mẫu EUR.1 xuất khẩu.
         </div>
 
-        <h3>1. Quy trình đối chiếu tự động 3 bước</h3>
+        <h3>1. Quy trình 3 bước (giao diện mới v3.4)</h3>
         <div class="card">
             <ol>
-                <li><b>Bước 1:</b> Chọn file PDF Scan SC gốc (hoặc thư mục chứa toàn bộ các file SC cần đối chiếu) và chọn file Excel XNNL từ PMSX.</li>
-                <li><b>Bước 2:</b> Bấm <b>🚀 BẮT ĐẦU ĐỐI CHIẾU & XỬ LÝ TỰ ĐỘNG</b>. AI Gemini 3.8 Flash Vision và engine RapidOCR sẽ quét bóc tách toàn bộ danh sách tàu cá trên Giấy SC gốc, so khớp với từng dòng tàu trong Excel.</li>
-                <li><b>Bước 3:</b> Xem 5 Thẻ KPI thống kê số liệu và bấm mở <b>Báo Cáo Đối Chiếu (.xlsx)</b> hoặc <b>File XNNL Chuẩn Hóa (.xlsx)</b>.</li>
+                <li><b>Mở lô:</b> vào trang <b>Lô hàng</b> (Ctrl+0), <b>kéo thả thư mục lô hàng</b> (hoặc dán đường dẫn, kể cả ổ mạng W:\\). Thẻ <b>“Lô đang mở”</b> hiện ngay 5 loại chứng từ đã nhận: SC gốc (scan), Bảng kê, Hóa đơn VAT, XNNL, SC Excel. Nhận sai thì bấm <b>Xem từng file</b> để sửa.</li>
+                <li><b>Đối chiếu:</b> bấm <b>▶ Đọc &amp; đối chiếu ngay</b>. Phần mềm đọc SC bằng AI rồi <b>tự kiểm tra</b>: KL mua ≤ KL khai thác, tổng các dòng = dòng TOTAL in trên SC, hạn GP không trước ngày bốc dỡ, so với <b>Sổ tàu</b>; ô nghi ngờ được <b>cắt đúng dòng / đúng ô tên</b> trên ảnh và đọc lại. Hóa đơn điện tử đọc thẳng lớp chữ (không cần AI).</li>
+                <li><b>Duyệt:</b> tab <b>Cần xử lý</b> chỉ hiện các mục <b style="color:#C2261F">× Sai lệch thật</b> (hồ sơ ghi khác SC gốc) và <b style="color:#B45309">? Cần xem</b> (máy chưa chắc), kèm giá trị từng nguồn + <b>ảnh cắt đúng dòng trên SC gốc</b>. Mỗi mục chọn:
+                    <ul>
+                        <li><b>Sửa theo SC gốc</b> (phím <b>Enter</b>): file <b>XNNL đã sửa</b> lấy giá trị SC; ghi vào Sổ tàu.</li>
+                        <li><b>Giữ nguyên hồ sơ</b>: ô đó KHÔNG bị sửa trong file XNNL đã sửa (file tự xuất lại ngay).</li>
+                    </ul>
+                    Tab <b>Ma trận tàu</b> cho thấy toàn bộ tàu × tiêu chí (✓ khớp · ? cần xem · × sai lệch) — bấm đúp ô để mở mục tương ứng.</li>
             </ol>
         </div>
 
-        <h3>2. Các lỗi sai lệch thường gặp và cách xử lý</h3>
+        <h3>2. Quy tắc đối chiếu đã thống nhất</h3>
         <div class="card">
             <ul>
-                <li><b style="color: #b91c1c;">Sai tên Chủ tàu / Thuyền trưởng:</b> Thường do tàu được mua bán chuyển nhượng nhưng chưa sang tên giấy phép, hoặc chủ tàu thuê thuyền trưởng khác điều khiển. Phần mềm tự động đề xuất sửa tên theo SC gốc để nộp hồ sơ.</li>
-                <li><b style="color: #b91c1c;">Sai số Giấy phép khai thác (GPKTTS) hoặc hết hạn:</b> Giấy phép khai thác phải còn hiệu lực trong suốt thời gian chuyến biển. Nếu sai lệch, cần kiểm tra lại ngày cấp gia hạn tại Chi cục Thủy sản.</li>
-                <li><b style="color: #b45309;">Trùng tàu và cùng ngày lên cá:</b> Nếu 1 tàu cập cảng/lên cá cùng ngày và phát sinh nhiều dòng hàng trên PMSX, phần mềm tự động bật quy tắc <b>Gộp lượng (Aggregation Rule)</b> để cộng dồn khối lượng thành 1 dòng duy nhất theo chuẩn quy định.</li>
+                <li><b style="color: #C2261F;">Tên chủ tàu khác SC gốc = Sai lệch thật.</b> Ngoại lệ: Bảng kê ghi “Chủ tàu/ Thuyền trưởng” mà SC trùng 1 trong các tên thì coi là khớp. Tên chỉ khác dấu (Thánh/Thành, Sắt/Sát) được tự đọc lại trên ảnh ô tên trước khi kết luận.</li>
+                <li><b style="color: #C2261F;">Khối lượng:</b> lô hàng <b>được dùng một phần</b> lượng mua trên SC; chỉ báo sai khi XNNL / Bảng kê <b>VƯỢT</b> lượng mua trên SC. Trên SC Mẫu 01: cột (11) = KL nguyên liệu MUA, cột (12) = KL khai thác.</li>
+                <li><b style="color: #b91c1c;">Số / hạn Giấy phép KTTS:</b> giấy phép phải còn hiệu lực trong suốt chuyến biển; hạn GP là ngày sau dấu nháy, không phải năm trong số giấy phép.</li>
+                <li><b style="color: #b45309;">Trùng tàu cùng ngày lên cá:</b> bật <b>Gộp tàu trùng ngày</b> để cộng dồn thành 1 dòng.</li>
+                <li><b>Nguồn AI:</b> key Google / key công ty <code>gw_...</code> đi qua <b>Cổng AI công ty</b> (chỉ cho phép model gemini-3.8-flash); key APIZ cá nhân <code>sk-...</code> đi thẳng APIZ.</li>
             </ul>
         </div>
 
@@ -1649,7 +1661,7 @@ class COExtractorApp(QMainWindow):
                 try:
                     total_fob += float(it.text().replace(",", "").strip())
                 except:
-                    pass
+                    _ghi_loi_bo_qua()
         self.txt_fob_total.setText(f"{total_fob:.2f}")
 
     # ----------------------------------------------------
@@ -1966,7 +1978,7 @@ class COExtractorApp(QMainWindow):
                         if any(k in txt_clean for k in ["CÔNG VĂN", "CONG VAN", "GIẤY CAM KẾT", "GIAY CAM KET", "BẢN CAM KẾT", "BAN CAM KET", "ĐƠN ĐỀ NGHỊ", "DON DE NGHI"]):
                             return "TAILIEUCHUNGMINH"
             except Exception:
-                pass
+                _ghi_loi_bo_qua()
 
         return "TAILIEUCHUNGMINH"
 
@@ -2264,7 +2276,7 @@ class COExtractorApp(QMainWindow):
 
     def on_api_key_changed(self, text: str):
         t = text.strip()
-        if t.startswith("AIzaSy"):
+        if t.startswith(("AIzaSy", "gw_")):
             for i in range(self.combo_api_source.count()):
                 if self.combo_api_source.itemData(i) == "official":
                     self.combo_api_source.setCurrentIndex(i)
@@ -2800,7 +2812,7 @@ class COExtractorApp(QMainWindow):
         try:
             os.startfile(target_dir)
         except Exception:
-            pass
+            _ghi_loi_bo_qua()
 
         QMessageBox.information(
             self,
@@ -2889,17 +2901,17 @@ class COExtractorApp(QMainWindow):
                     w.requestInterruption()
                     w.wait(400)
                 except Exception:
-                    pass
+                    _ghi_loi_bo_qua()
         if hasattr(self, 'inspector_doc') and self.inspector_doc:
             try:
                 self.inspector_doc.close()
             except Exception:
-                pass
+                _ghi_loi_bo_qua()
             self.inspector_doc = None
         try:
             local_stream_server.stop_local_stream_server()
         except Exception:
-            pass
+            _ghi_loi_bo_qua()
         event.accept()
         QApplication.quit()
 

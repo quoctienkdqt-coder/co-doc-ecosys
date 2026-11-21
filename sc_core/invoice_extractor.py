@@ -3,6 +3,11 @@ Mô-đun bóc tách hóa đơn điện tử VAT (PDF) cho đối chiếu hồ s�
 Hỗ trợ các nhà cung cấp hóa đơn phổ biến tại Việt Nam (Viettel vinvoice, VNPT, MISA meInvoice, Softdreams, ...).
 """
 
+try:  # ghi lỗi bị bỏ qua vào loi_bo_qua.log (thay cho except: pass im lặng)
+    from nhat_ky_loi import ghi as _ghi_loi_bo_qua
+except Exception:  # pragma: no cover
+    def _ghi_loi_bo_qua(*_a, **_k):
+        return None
 import os
 import re
 import glob
@@ -159,7 +164,7 @@ def extract_single_invoice_pdf(pdf_path: str) -> Dict[str, Any]:
                         'amount': amount
                     })
             except Exception:
-                pass
+                _ghi_loi_bo_qua()
 
     total_qty = sum(it['qty'] for it in items)
     

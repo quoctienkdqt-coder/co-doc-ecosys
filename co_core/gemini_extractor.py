@@ -1,3 +1,8 @@
+try:  # ghi lỗi bị bỏ qua vào loi_bo_qua.log (thay cho except: pass im lặng)
+    from nhat_ky_loi import ghi as _ghi_loi_bo_qua
+except Exception:  # pragma: no cover
+    def _ghi_loi_bo_qua(*_a, **_k):
+        return None
 import requests
 import time
 """
@@ -219,7 +224,7 @@ def repair_and_extract_json(raw: str) -> str:
         json.loads(text)
         return text
     except Exception:
-        pass
+        _ghi_loi_bo_qua()
 
     # 2. Thuật toán phân tích cú pháp ký tự và sửa lỗi cắt cụt
     in_string = False
@@ -297,7 +302,7 @@ def repair_and_extract_json(raw: str) -> str:
                 json.loads(cand)
                 return cand
             except Exception:
-                pass
+                _ghi_loi_bo_qua()
         return repaired
 
 
@@ -454,7 +459,7 @@ def extract_co_data_via_apiz(
                         res = resp.json()
                         raw_text = res["choices"][0]["message"]["content"]
                     except Exception:
-                        pass
+                        _ghi_loi_bo_qua()
 
                 if raw_text:
                     break
@@ -562,7 +567,8 @@ def create_gemini_client(api_key: str, api_source: str = "official", api_base_ur
     if not api_key:
         raise ValueError("Vui lòng nhập API Key (Google Gemini hoặc APIZ) để tiếp tục.")
     
-    return genai.Client(api_key=api_key)
+    from app_config_manager import tao_google_client
+    return tao_google_client(api_key)
 
 
 def extract_co_data_from_files(
@@ -585,7 +591,7 @@ def extract_co_data_from_files(
 
     # 1. Định tuyến chuẩn xác: Phân biệt rõ Google Gemini Official và APIZ Vietnam Gateway
     # Key Google chính thức luôn bắt đầu bằng 'AIzaSy' hoặc người dùng chọn 'official'
-    is_google = (api_source.lower() == "official") or api_key.startswith("AIzaSy")
+    is_google = (api_source.lower() == "official") or api_key.startswith(("AIzaSy", "gw_"))
     is_apiz = not is_google and ((api_source.lower() == "apiz") or api_key.startswith("sk-") or ("apiz" in (api_base_url or "").lower()))
 
     if is_apiz:
@@ -796,7 +802,7 @@ def ask_co_advisor(
     """
     Gửi câu hỏi nghiệp vụ C/O hoặc hướng dẫn thao tác eCoSys tới Trợ lý AI Chuyên gia
     """
-    is_google = (api_source.lower() == "official") or api_key.startswith("AIzaSy")
+    is_google = (api_source.lower() == "official") or api_key.startswith(("AIzaSy", "gw_"))
     is_apiz = not is_google and ((api_source.lower() == "apiz") or api_key.startswith("sk-") or ("apiz" in (api_base_url or "").lower()))
 
     if is_apiz:

@@ -72,8 +72,42 @@ def _fao_codes(v):
     return sorted(set(re.sub(r"\s+", "", c) for c in re.findall(r"FAO\s*\d+\s*-\s*[A-Z0-9]+", t)))
 
 
+# Mã loài (FAO 3 chữ) <- các cách ghi thường gặp: tên Việt / Anh / khoa học (đã bỏ dấu, chữ thường)
+SPECIES_ALIASES = {
+    "YFT": ["ca ngu vay vang", "yellowfin", "thunnus albacares"],
+    "BET": ["ca ngu mat to", "bigeye", "thunnus obesus"],
+    "SKJ": ["ca ngu van", "ca ngu soc", "skipjack", "katsuwonus pelamis"],
+    "ALB": ["ca ngu vay dai", "albacore", "thunnus alalunga"],
+    "SWO": ["ca kiem", "swordfish", "xiphias gladius"],
+    "DOL": ["ca dua", "ca nuc heo", "dolphinfish", "mahi mahi", "coryphaena hippurus"],
+}
+
+
+def species_code(v):
+    """'YellowfinTuna-Cá ngừ vây vàng (Thunnus albacares)', 'Cá Ngừ Vây vàng Thunnus Albacarcs' -> 'YFT'. Không nhận ra -> None."""
+    import difflib
+    t = " ".join(re.sub(r"[^a-z0-9]+", " ", strip_vietnamese_accents(_s(v))).split())
+    if not t:
+        return None
+    t_dinh = t.replace(" ", "")
+    for code, aliases in SPECIES_ALIASES.items():
+        if any(a in t or a.replace(" ", "") in t_dinh for a in aliases):
+            return code
+    # chấp nhận lỗi chính tả nhỏ do OCR/AI (vd "albacarcs")
+    w = t.split()
+    grams = [" ".join(w[i:i + n]) for n in (1, 2, 3, 4) for i in range(len(w) - n + 1)]
+    for code, aliases in SPECIES_ALIASES.items():
+        for a in aliases:
+            if len(a) >= 7 and difflib.get_close_matches(a, grams, n=1, cutoff=0.86):
+                return code
+    return None
+
+
 def _species_key(v):
-    """Ưu tiên tên khoa học trong ngoặc, nếu không có thì dùng cả chuỗi."""
+    """Mã loài nếu nhận ra; nếu không: tên khoa học trong ngoặc, hoặc cả chuỗi."""
+    code = species_code(v)
+    if code:
+        return code.lower()
     t = _s(v)
     m = re.search(r"\(([^)]+)\)", t)
     if m:
@@ -243,6 +277,17 @@ def _cmp_field(key, a, b):
     return "MISMATCH", "Khác nội dung"
 
 
+def cmp_excel_pdf_field(key, e, p):
+    """
+    So 1 trường giữa dòng SC Excel (e) và dòng SC PDF (p).
+    Quy ước nghiệp vụ (người dùng xác nhận 20/11/2026): trên file SC Excel, cột "KL khai thác" thực chất ghi
+    KL NGUYÊN LIỆU MUA từ tàu (= cột (11) trên PDF) -> so Excel.total_catch_kg với PDF.req_catch_kg.
+    """
+    if key == "total_catch_kg":
+        return _cmp_field(key, e.get("total_catch_kg"), p.get("req_catch_kg"))
+    return _cmp_field(key, e.get(key), p.get(key))
+
+
 def _d(s):
     try:
         return datetime.strptime(s, "%d/%m/%Y").date()
@@ -354,8 +399,9 @@ def reconcile_sc_excel_vs_pdf(excel_info, excel_records, pdf_info, pdf_records):
     sum_pdf_rq = sum(_to_float(r.get("req_catch_kg")) or 0 for r in pdf_records)
     sum_ex_tc = sum(r["total_catch_kg"] for r in excel_records)
     sum_pdf_tc = sum(_to_float(r.get("total_catch_kg")) or 0 for r in pdf_records)
+    # Quy ước: cột "khai thác" trong Excel = KL mua trên PDF (xem cmp_excel_pdf_field)
     for lbl, a, b in (("Tổng KL nguyên liệu mua (kg)", sum_ex_rq, sum_pdf_rq),
-                      ("Tổng KL khai thác (kg)", sum_ex_tc, sum_pdf_tc)):
+                      ("Tổng KL khai thác Excel ↔ KL mua PDF (kg)", sum_ex_tc, sum_pdf_rq)):
         ok = abs(a - b) <= TOL_KG
         hc(lbl, a, b, "MATCH" if ok else "MISMATCH", "" if ok else f"Lệch {a - b:+,.1f} kg")
     # --- Tổng in trên tờ giấy so với cộng dòng (kiểm tra nội bộ từng bên)
@@ -364,7 +410,15 @@ def reconcile_sc_excel_vs_pdf(excel_info, excel_records, pdf_info, pdf_records):
         ok = abs(a - b) <= TOL_KG
         hc("Excel: ô TOTAL so với cộng các dòng", a, b, "MATCH" if ok else "MISMATCH",
            "" if ok else "Ô TOTAL trong Excel không bằng tổng các dòng")
-    if pdf_info.get("total_req_catch_kg") is not None:
+    # Ưu tiên số TOTAL thật in trên giấy (AI đọc từ dòng Tổng); total_req_catch_kg cũ chỉ là tổng tự cộng
+    _pt = (pdf_info.get("printed_total") or {}).get("req_catch_kg") if isinstance(pdf_info.get("printed_total"), dict) else None
+    _pt_val = _to_float(_pt) if _pt not in (None, "", "null") else None
+    if _pt_val is not None:
+        a, b = _pt_val, sum_pdf_rq
+        ok = abs(a - b) <= TOL_KG
+        hc("PDF: dòng TOTAL in trên giấy so với cộng các dòng", a, b, "MATCH" if ok else "MISMATCH",
+           "" if ok else "Tổng in trên SC không bằng tổng các dòng AI đọc (có thể đọc sót/sai) - cần xem")
+    elif pdf_info.get("total_req_catch_kg") is not None:
         a, b = _to_float(pdf_info.get("total_req_catch_kg")) or 0, sum_pdf_rq
         ok = abs(a - b) <= TOL_KG
         hc("PDF: dòng TOTAL so với cộng các dòng", a, b, "MATCH" if ok else "MISMATCH",
@@ -393,8 +447,9 @@ def reconcile_sc_excel_vs_pdf(excel_info, excel_records, pdf_info, pdf_records):
                 continue
             fields, diffs, warns = {}, [], []
             for key, label in FIELD_LABELS:
-                st, note = _cmp_field(key, e.get(key), p.get(key))
-                fields[key] = {"status": st, "note": note, "excel": e.get(key), "pdf": p.get(key)}
+                st, note = cmp_excel_pdf_field(key, e, p)
+                pdf_v = p.get("req_catch_kg") if key == "total_catch_kg" else p.get(key)
+                fields[key] = {"status": st, "note": note, "excel": e.get(key), "pdf": pdf_v}
                 if st == "MISMATCH": diffs.append(label)
                 elif st == "WARN": warns.append(label)
             _lbl = dict(FIELD_LABELS)
@@ -423,6 +478,13 @@ def reconcile_sc_excel_vs_pdf(excel_info, excel_records, pdf_info, pdf_records):
             for p in p_list:
                 rows.append({"vessel_id": p.get("vessel_id", ""), "status": "ONLY_PDF", "excel": None, "pdf": p,
                              "fields": {}, "diff_fields": [], "note": "Có trong PDF nhưng không thấy trong Excel"})
+
+    # Lớp 5: trường nào SC PDF khớp SC Excel (2 nguồn độc lập) -> ghi vào sổ tàu đã xác nhận
+    try:
+        from sc_core import so_tau
+        so_tau.hoc_tu_doi_chieu_sc(rows, excel_info.get("sc_number") or pdf_info.get("sc_number") or "")
+    except Exception as _e:
+        print(f"Không ghi được sổ tàu: {_e}")
 
     cnt = lambda s: sum(1 for r in rows if r["status"] == s)
     hdr_bad = sum(1 for h in header_checks if h["status"] != "MATCH")

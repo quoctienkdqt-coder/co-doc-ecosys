@@ -1,3 +1,8 @@
+try:  # ghi lỗi bị bỏ qua vào loi_bo_qua.log (thay cho except: pass im lặng)
+    from nhat_ky_loi import ghi as _ghi_loi_bo_qua
+except Exception:  # pragma: no cover
+    def _ghi_loi_bo_qua(*_a, **_k):
+        return None
 import openpyxl
 import xlrd
 from datetime import datetime, date
@@ -98,7 +103,7 @@ def open_excel_workbook(file_path):
             if header.startswith(b'\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1'):
                 is_xls = True
     except Exception:
-        pass
+        _ghi_loi_bo_qua()
 
     if not is_xls and not file_path.lower().endswith('.xls'):
         try:
@@ -122,7 +127,7 @@ def open_excel_workbook(file_path):
                         try:
                             val = datetime.datetime(*xlrd.xldate_as_tuple(val, rb.datemode))
                         except Exception:
-                            pass
+                            _ghi_loi_bo_qua()
                     row_vals.append(val)
                 ws.append(row_vals)
         return wb
@@ -363,9 +368,10 @@ def aggregate_and_validate_excel(records):
         m_period = re.search(r'(\d{2}/\d{2}/\d{4})\s*-\s*(\d{2}/\d{2}/\d{4})', r['catch_period'])
         if m_period and r['landing_date']:
             try:
-                d_start = datetime.strptime(m_period.group(1), "%d/%m/%Y")
-                d_end = datetime.strptime(m_period.group(2), "%d/%m/%Y")
-                d_land = datetime.strptime(r['landing_date'], "%d/%m/%Y")
+                # (dòng 4 "import datetime" ghi đè class datetime -> phải gọi datetime.datetime)
+                d_start = datetime.datetime.strptime(m_period.group(1), "%d/%m/%Y")
+                d_end = datetime.datetime.strptime(m_period.group(2), "%d/%m/%Y")
+                d_land = datetime.datetime.strptime(r['landing_date'], "%d/%m/%Y")
                 
                 if d_start > d_end:
                     errors.append("Ngày bắt đầu khai thác lớn hơn ngày kết thúc")
@@ -373,7 +379,7 @@ def aggregate_and_validate_excel(records):
                     errors.append(f"Ngày kết thúc KT ({m_period.group(2)}) sau ngày lên cá ({r['landing_date']})")
                     
                 if r['licence_exp']:
-                    d_exp = datetime.strptime(r['licence_exp'], "%d/%m/%Y")
+                    d_exp = datetime.datetime.strptime(r['licence_exp'], "%d/%m/%Y")
                     if d_end > d_exp:
                         errors.append(f"Chuyến biển KT vượt quá hạn giấy phép ({r['licence_exp']})")
             except Exception as e:

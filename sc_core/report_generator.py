@@ -1217,15 +1217,23 @@ def create_reconciliation_excel_report(output_path, recon_results, summary_stats
     return safe_save_workbook(wb, output_path)
 
 
-def generate_corrected_excel_xnnl(original_excel_path, corrected_excel_path, recon_results):
+def generate_corrected_excel_xnnl(original_excel_path, corrected_excel_path, recon_results, giu_nguyen=None):
+    """
+    Tạo file XNNL đã sửa theo SC gốc.
+    giu_nguyen: tập (số tàu chuẩn hóa không dấu cách, trường) người dùng chọn "Giữ nguyên hồ sơ" ở tab Cần xử lý
+                -> KHÔNG ghi đè ô đó. trường: owner | licence_no | licence_exp | landing_date | catch_period
+    """
     from sc_core.excel_processor import open_excel_workbook
+    giu = {(str(v).replace(" ", "").replace("Ð", "Đ").upper(), f) for v, f in (giu_nguyen or set())}
     wb = open_excel_workbook(original_excel_path)
-    
+
     # 1. Update Sheet Chủ Tàu
     sc_owner_map = {}
     for r in recon_results:
         if r.get('sc_data') and r['sc_data'].get('owner'):
-            v_clean = r['vessel_id'].replace(" ", "").upper()
+            v_clean = r['vessel_id'].replace(" ", "").replace("Ð", "Đ").upper()
+            if (v_clean, "owner") in giu:
+                continue
             sc_owner_map[v_clean] = r['sc_data']['owner']
 
     for sname in wb.sheetnames:
@@ -1258,13 +1266,13 @@ def generate_corrected_excel_xnnl(original_excel_path, corrected_excel_path, rec
                 v_norm = str(v_val).strip().replace("Ð", "Đ").replace(" ", "").upper()
                 if v_norm in sc_data_map:
                     sc = sc_data_map[v_norm]
-                    if sc.get('licence_no'):
+                    if sc.get('licence_no') and (v_norm, 'licence_no') not in giu:
                         ws_pfi.cell(row, 7).value = sc['licence_no']
-                    if sc.get('licence_exp'):
+                    if sc.get('licence_exp') and (v_norm, 'licence_exp') not in giu:
                         ws_pfi.cell(row + 1, 7).value = sc['licence_exp']
-                    if sc.get('landing_date'):
+                    if sc.get('landing_date') and (v_norm, 'landing_date') not in giu:
                         ws_pfi.cell(row, 11).value = sc['landing_date']
-                    if sc.get('catch_period'):
+                    if sc.get('catch_period') and (v_norm, 'catch_period') not in giu:
                         ws_pfi.cell(row + 1, 8).value = sc['catch_period']
             row += 1
 

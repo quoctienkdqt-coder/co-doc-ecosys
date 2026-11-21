@@ -11,6 +11,11 @@ Tính năng nổi bật:
 - Phím tắt tiện ích: Ctrl+B (Thu/Mở Menu), F1 (Cẩm nang Hướng dẫn).
 """
 
+try:  # ghi lỗi bị bỏ qua vào loi_bo_qua.log (thay cho except: pass im lặng)
+    from nhat_ky_loi import ghi as _ghi_loi_bo_qua
+except Exception:  # pragma: no cover
+    def _ghi_loi_bo_qua(*_a, **_k):
+        return None
 import sys
 import re
 import os
@@ -70,6 +75,10 @@ from sc_core.report_generator import create_reconciliation_excel_report, generat
 from sc_core.sc_excel_vs_pdf import reconcile_sc_excel_files_vs_repo
 from sc_core.invoice_extractor import extract_invoices_repository, find_invoice_in_repo
 from sc_core.ai_extractor import load_ai_config, save_ai_config
+from sc_core.hang_doi import tao_hang_doi, tao_ma_tran
+from ui_hang_doi import HangDoiWidget, MaTranWidget
+from ui_lo_hang import LoHangWidget
+from sc_core import lo_gan_day
 
 
 # Cột hiển thị cho tab đối chiếu SC Excel <-> SC scan PDF: (khóa, tiêu đề, độ rộng)
@@ -80,6 +89,15 @@ SCX_COLUMNS = [
     ("total_catch_kg", "KL khai thác (kg)", 140), ("validity", "Khai thác & bốc dỡ trong hạn GP", 220),
     ("landing_order", "Ngày bốc dỡ sau ngày khai thác", 220),
 ]
+
+
+def _nut_icon(text, icon_name, variant=None, size=None, tooltip=None):
+    """Nút có icon nét (ui_icons) — thay cho emoji trên nút."""
+    from ui_icons import icon as _icon
+    b = ui.button(text, variant, size, tooltip=tooltip)
+    mau = {"primary": "#FFFFFF", "soft": ui.C["primary_press"], "ghost": ui.C["text_2"]}.get(variant or "", ui.C["text"])
+    b.setIcon(_icon(icon_name, mau))
+    return b
 
 
 # ========================================================
@@ -115,6 +133,11 @@ class SCReconcileWorker(QThread):
     def run(self):
         try:
             self.log_signal.emit("🚀 Bắt đầu quá trình đối chiếu hồ sơ xuất nhập khẩu hợp nhất...")
+            try:
+                import nhat_ky_loi as _nkl
+                self._loi_truoc = _nkl.so_loi()
+            except Exception:
+                _nkl, self._loi_truoc = None, 0
             os.makedirs(self.out_dir, exist_ok=True)
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             prov = "apiz" if (self.api_source == "apiz" or (self.api_key and self.api_key.startswith("sk-"))) else "gemini"
@@ -251,7 +274,7 @@ class SCReconcileWorker(QThread):
                     create_full_suite_excel_report(lote_report, master_res)
                     self.log_signal.emit(f"📁 Đã lưu bản báo cáo tại thư mục hồ sơ: {lote_report}")
                 except Exception:
-                    pass
+                    _ghi_loi_bo_qua()
 
             corrected_path = None
             xnnl_recons = master_res.get('xnnl_vs_sc', {}).get('recons', [])
@@ -261,6 +284,11 @@ class SCReconcileWorker(QThread):
                 generate_corrected_excel_xnnl(self.excel_file, corrected_path, xnnl_recons)
                 self.log_signal.emit(f"📑 Đã tạo File XNNL chuẩn hóa: {corrected_path}")
 
+            if _nkl is not None:
+                moi = _nkl.so_loi() - self._loi_truoc
+                if moi > 0:
+                    self.log_signal.emit(f"⚠️ Có {moi} lỗi nhỏ bị bỏ qua trong lúc xử lý (phần mềm vẫn chạy tiếp) — "
+                                         f"chi tiết trong {_nkl.duong_dan()}")
             prog_cb(100, "Hoàn tất đối chiếu và xuất báo cáo!")
             result_data = {
                 "mode": "ALL_IN_ONE",
@@ -301,7 +329,7 @@ class SCReconciliationWidget(QWidget):
         # --------------------------------------------------------
         # TIÊU ĐỀ TRANG
         # --------------------------------------------------------
-        self.btn_open_folder = ui.button("📂 Thư mục kết quả", "ghost", tooltip="Mở thư mục KetQua_DoiChieu")
+        self.btn_open_folder = _nut_icon("  Thư mục kết quả", "folder", "ghost", tooltip="Mở thư mục KetQua_DoiChieu")
         self.btn_open_folder.clicked.connect(self.open_output_folder)
         layout.addLayout(ui.page_header(
             "Đối chiếu hồ sơ SC & Bảng kê",
@@ -324,7 +352,7 @@ class SCReconciliationWidget(QWidget):
         self.entry_folder.returnPressed.connect(lambda: self.auto_detect_folder(self.entry_folder.text().strip()))
         row1.addWidget(self.entry_folder, stretch=1)
 
-        btn_auto_dir = ui.button("📂 Chọn thư mục lô hàng", "soft")
+        btn_auto_dir = _nut_icon("  Chọn thư mục lô hàng", "folder", "soft")
         btn_auto_dir.clicked.connect(self.browse_auto_dir)
         row1.addWidget(btn_auto_dir)
 
@@ -332,7 +360,7 @@ class SCReconciliationWidget(QWidget):
         btn_sample.clicked.connect(self.load_sample_ld_linh)
         row1.addWidget(btn_sample)
 
-        self.btn_toggle_manual = ui.button("⚙ Chọn lẻ từng file ▾", "ghost")
+        self.btn_toggle_manual = ui.button("Chọn lẻ từng file  ▾", "ghost")
         self.btn_toggle_manual.setCheckable(True)
         self.btn_toggle_manual.toggled.connect(self.toggle_manual_files)
         row1.addWidget(self.btn_toggle_manual)
@@ -446,7 +474,7 @@ class SCReconciliationWidget(QWidget):
         self.combo_mode.addItem("ALL_IN_ONE", "ALL_IN_ONE")
         self.combo_mode.setVisible(False)
 
-        self.chk_ai = QCheckBox("AI đọc SC & hóa đơn scan")
+        self.chk_ai = QCheckBox("AI đọc bản scan")
         self.chk_ai.setToolTip("Dùng AI đọc bản scan SC và hóa đơn VAT scan (chỉ đọc trang là hóa đơn, có cache)")
         self.chk_ai.setChecked(True)
         action_row.addWidget(self.chk_ai)
@@ -461,12 +489,12 @@ class SCReconciliationWidget(QWidget):
         self.lbl_status.setObjectName("StatusText")
         action_row.addWidget(self.lbl_status, stretch=1)
 
-        self.btn_open_report = ui.button("📊 Mở báo cáo", "soft", tooltip="Mở file báo cáo Excel vừa xuất")
+        self.btn_open_report = _nut_icon("  Mở báo cáo", "grid", "soft", tooltip="Mở file báo cáo Excel vừa xuất")
         self.btn_open_report.clicked.connect(self.open_report_file)
         self.btn_open_report.setEnabled(False)
         action_row.addWidget(self.btn_open_report)
 
-        self.btn_open_fixed = ui.button("📑 XNNL đã sửa", "soft", tooltip="Mở file XNNL đã chuẩn hóa")
+        self.btn_open_fixed = _nut_icon("  XNNL đã sửa", "doc", "soft", tooltip="Mở file XNNL đã sửa (theo quyết định ở tab Cần xử lý)")
         self.btn_open_fixed.clicked.connect(self.open_fixed_file)
         self.btn_open_fixed.setEnabled(False)
         action_row.addWidget(self.btn_open_fixed)
@@ -494,8 +522,9 @@ class SCReconciliationWidget(QWidget):
         self.lbl_kpi_bk = self.create_kpi_card(kpi_box, "Dòng bảng kê", "0", "#2563EB")
         self.lbl_kpi_inv = self.create_kpi_card(kpi_box, "Hóa đơn VAT", "0", "#0891B2")
         self.lbl_kpi_sc = self.create_kpi_card(kpi_box, "Tàu trên SC gốc", "0", "#475569")
-        self.lbl_kpi_match = self.create_kpi_card(kpi_box, "Khớp hoàn toàn", "0", "#16A34A")
-        self.lbl_kpi_diff = self.create_kpi_card(kpi_box, "Lưu ý & sai lệch", "0", "#DC2626")
+        self.lbl_kpi_match = self.create_kpi_card(kpi_box, "Tự duyệt", "0", "#15803D", tone="ok")
+        self.lbl_kpi_xem = self.create_kpi_card(kpi_box, "Cần người xem", "0", "#B45309", tone="xem")
+        self.lbl_kpi_diff = self.create_kpi_card(kpi_box, "Sai lệch thật", "0", "#C2261F", tone="lech")
         layout.addLayout(kpi_box)
 
         # --------------------------------------------------------
@@ -611,6 +640,23 @@ class SCReconciliationWidget(QWidget):
         l_log.addWidget(self.txt_log)
         self.tabs.addTab(self.tab_log, "Nhật ký xử lý")
 
+        # TAB 0 (mới): HÀNG ĐỢI DUYỆT — chỉ hiện những mục cần người xử lý, kèm ảnh cắt dòng SC gốc
+        self.tab_queue, l_q = tab_page()
+        self.hang_doi = HangDoiWidget()
+        self.hang_doi.da_thay_doi.connect(self._cap_nhat_dem_hang_doi)
+        l_q.addWidget(self.hang_doi)
+        self.tabs.insertTab(0, self.tab_queue, "Cần xử lý")
+        self.tabs.setTabToolTip(0, "Hàng đợi duyệt: chỉ các mục sai lệch / cần xem. Enter = chấp nhận theo SC gốc.")
+
+        # TAB 1 (mới): MA TRẬN TÀU × TIÊU CHÍ
+        self.tab_matrix, l_m = tab_page()
+        self.ma_tran = MaTranWidget()
+        self.ma_tran.mo_tau.connect(self._mo_tau_trong_hang_doi)
+        l_m.addWidget(self.ma_tran)
+        self.tabs.insertTab(1, self.tab_matrix, "Ma trận tàu")
+        self.tabs.setTabToolTip(1, "Toàn bộ tàu × tiêu chí trên 1 màn hình: ✓ khớp · ? cần xem · ✕ sai lệch thật")
+        self.tabs.setCurrentIndex(0)
+
         layout.addWidget(self.tabs, stretch=1)
         self.refresh_file_pills()
         ui.smooth_item_views(self)
@@ -626,9 +672,45 @@ class SCReconciliationWidget(QWidget):
         btn.setToolTip(tip or ("Bấm để đổi file" if active else "Bấm để chọn file"))
         ui.set_prop(btn, "state", "on" if active else "off")
 
+    def tom_tat_chung_tu(self) -> list:
+        """Tóm tắt chứng từ đã nhận diện (cho thẻ "Lô đang mở" ở trang chủ): [{ten, so, ghi, co}]."""
+        def ds(txt):
+            return [p.strip().strip('"') for p in (txt or "").split(";") if p.strip()]
+        out = []
+        sc = [p for p in ds(self.entry_sc.text()) if not p.lower().endswith(('.xlsx', '.xls', '.xlsm'))]
+        sc_pdf = []
+        for p in sc:
+            if os.path.isdir(p):
+                sc_pdf += [f for f in os.listdir(p) if f.lower().endswith('.pdf')]
+            else:
+                sc_pdf.append(os.path.basename(p))
+        so_sc = sorted({m.group(1) for f in sc_pdf for m in [re.match(r"\D*(\d{3,6})", f)] if m})
+        out.append({"ten": "SC gốc (scan)", "so": f"{len(sc_pdf)} file" if sc_pdf else "Chưa có",
+                    "ghi": ("SC " + " · ".join(so_sc[:4]) + (" …" if len(so_sc) > 4 else "")) if so_sc else "cần ít nhất 1 file",
+                    "co": bool(sc_pdf)})
+        bk = self.entry_bang_ke.text().strip()
+        out.append({"ten": "Bảng kê thu mua", "so": "1 file" if bk and os.path.exists(bk) else "Không có",
+                    "ghi": self._short(os.path.basename(bk), 24) if bk else "không bắt buộc", "co": bool(bk and os.path.exists(bk))})
+        inv = ds(self.entry_invoices.text())
+        n_hd = 0
+        for p in inv:
+            if os.path.isdir(p):
+                n_hd += len([f for f in os.listdir(p) if f.lower().endswith('.pdf')])
+            elif p.lower().endswith('.pdf') and os.path.exists(p):
+                n_hd += 1
+        out.append({"ten": "Hóa đơn VAT", "so": f"{n_hd} PDF" if n_hd else "Không có",
+                    "ghi": "điện tử đọc lớp chữ · scan đọc AI" if n_hd else "cần khi có Bảng kê", "co": bool(n_hd)})
+        xn = self.entry_excel.text().strip()
+        out.append({"ten": "XNNL (PMSX)", "so": "1 file" if xn and os.path.exists(xn) else "Không có",
+                    "ghi": self._short(os.path.basename(xn), 24) if xn else "không bắt buộc", "co": bool(xn and os.path.exists(xn))})
+        scx = self.get_sc_excel_files() if hasattr(self, "get_sc_excel_files") else []
+        out.append({"ten": "SC Excel", "so": f"{len(scx)} file" if scx else "Không có",
+                    "ghi": "ghép với SC scan cùng số" if scx else "không bắt buộc", "co": bool(scx)})
+        return out
+
     def toggle_manual_files(self, checked: bool):
         self.panel_manual.setVisible(checked)
-        self.btn_toggle_manual.setText("⚙ Ẩn chọn lẻ ▴" if checked else "⚙ Chọn lẻ từng file ▾")
+        self.btn_toggle_manual.setText("Ẩn chọn lẻ  ▴" if checked else "Chọn lẻ từng file  ▾")
 
     def refresh_file_pills(self):
         # 1. SC gốc
@@ -682,30 +764,23 @@ class SCReconciliationWidget(QWidget):
             self._set_pill_state(self.pill_scx, False, "📗 SC Excel · chưa chọn",
                                  "Chọn 1 hoặc nhiều file SC Excel để đối chiếu với SC scan PDF")
 
-    def create_kpi_card(self, parent_layout, title: str, val: str, color: str, bg_color: str = "#ffffff") -> QLabel:
-        """Thẻ KPI: vạch màu bên trái + nhãn nhỏ + số lớn."""
+    def create_kpi_card(self, parent_layout, title: str, val: str, color: str, bg_color: str = "#ffffff",
+                        tone: str = None) -> QLabel:
+        """Thẻ KPI "Hải trình": nhãn nhỏ + số lớn đậm; thẻ trạng thái (tone ok/xem/lech) có nền màu nhạt + ký hiệu."""
         card = ui.card("KpiCard")
+        if tone:
+            card.setProperty("tone", tone)
         card.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
-        l = QHBoxLayout(card)
-        l.setContentsMargins(12, 10, 14, 10)
-        l.setSpacing(10)
-
-        accent = QFrame()
-        accent.setObjectName("KpiAccent")
-        accent.setFixedWidth(4)
-        accent.setStyleSheet(f"QFrame#KpiAccent {{ background: {color}; }}")
-        l.addWidget(accent)
-
-        col = QVBoxLayout()
-        col.setSpacing(0)
-        lbl_t = QLabel(title)
-        lbl_t.setObjectName("Caption")
+        col = QVBoxLayout(card)
+        col.setContentsMargins(16, 12, 16, 12)
+        col.setSpacing(2)
+        ky = {"ok": "✓  ", "xem": "?  ", "lech": "×  "}.get(tone or "", "")
+        lbl_t = QLabel(ky + title)
+        lbl_t.setStyleSheet(f"font-size: 12.5px; font-weight: 600; color: {color if tone else ui.C['text_2']};")
         col.addWidget(lbl_t)
         lbl_v = QLabel(val)
-        lbl_v.setStyleSheet(f"font-size: 22px; font-weight: 700; color: {color};")
+        lbl_v.setStyleSheet(f"font-size: 26px; font-weight: 800; color: {color if tone else ui.C['text']};")
         col.addWidget(lbl_v)
-        l.addLayout(col, stretch=1)
-
         parent_layout.addWidget(card, stretch=1)
         return lbl_v
 
@@ -973,6 +1048,9 @@ class SCReconciliationWidget(QWidget):
             QMessageBox.critical(self, "Lỗi đối chiếu", f"Quá trình đối chiếu phát sinh lỗi:\n{err}")
 
     def populate_results_view(self, master_res: dict):
+        self._lo_info = None  # tránh ghi số liệu lô mới vào lô trước (hàng đợi phát tín hiệu trước khi lưu lô)
+        self._master_res = master_res
+        self._da_xuat_lai = False
         bk_records = master_res.get('bang_ke_records', [])
         invoices_repo = master_res.get('invoices_repo', {})
         sc_repo = master_res.get('sc_repo', {})
@@ -1258,14 +1336,87 @@ class SCReconciliationWidget(QWidget):
         self.lbl_kpi_bk.setText(str(len(bk_records)))
         self.lbl_kpi_inv.setText(str(inv_cnt))
         self.lbl_kpi_sc.setText(str(sc_cnt))
-        self.lbl_kpi_match.setText(str(bk_perfect_cnt if bk_records else xnnl_match_cnt))
-        self.lbl_kpi_diff.setText(str(bk_issue_cnt if bk_records else xnnl_issue_cnt))
+        # Hàng đợi duyệt: KPI Tự duyệt / Cần xem / Sai lệch thật lấy từ đây
+        try:
+            hd = tao_hang_doi(master_res)
+        except Exception as e:
+            self.log(f"⚠️ Không lập được hàng đợi duyệt: {e}")
+            hd = {"muc": [], "dem_tu_duyet": bk_perfect_cnt if bk_records else xnnl_match_cnt,
+                  "dem_can_xem": 0, "dem_sai_lech": bk_issue_cnt if bk_records else xnnl_issue_cnt}
+        self.lbl_kpi_match.setText(str(hd["dem_tu_duyet"]))
+        self.hang_doi.dat_du_lieu(hd, self.last_out_dir)
+        try:
+            self.ma_tran.dat_du_lieu(tao_ma_tran(master_res))
+        except Exception as e:
+            self.log(f"⚠️ Không lập được ma trận tàu: {e}")
+        self.last_hang_doi = hd
+        self._luu_lo_gan_day(master_res, hd)
 
-        # Tự động chuyển sang Tab phù hợp nhất
-        if bk_records:
-            self.tabs.setCurrentIndex(0)
-        elif x_recons:
-            self.tabs.setCurrentIndex(1)
+        # Luôn mở tab Cần xử lý trước
+        self.tabs.setCurrentIndex(0)
+
+    def _thu_muc_lo(self) -> str:
+        p = self.entry_folder.text().strip().strip('"')
+        if p and os.path.isdir(p):
+            return p
+        for e in (self.entry_bang_ke, self.entry_excel):
+            f = e.text().strip().strip('"')
+            if f and os.path.exists(f):
+                return os.path.dirname(f)
+        return ""
+
+    def _luu_lo_gan_day(self, master_res: dict, hd: dict):
+        lo = self._thu_muc_lo()
+        if not lo:
+            return
+        so_sc = sorted({str((p or {}).get("sc_info", {}).get("sc_number") or k)[:19]
+                        for k, p in (master_res.get("sc_repo") or {}).items() if "/" in str(k)})
+        n_bk = len(master_res.get("bang_ke_records") or [])
+        n_hd = (master_res.get("invoices_repo") or {}).get("count") or 0
+        n_sc = len(so_sc)
+        ct = " · ".join(x for x in (f"{n_bk} dòng BK" if n_bk else "", f"{n_hd} HĐ" if n_hd else "",
+                                    f"{n_sc} SC" if n_sc else "") if x)
+        self._lo_info = {"path": lo, "so_sc": so_sc, "chung_tu": ct, "tu_duyet": hd.get("dem_tu_duyet", 0),
+                         "bao_cao": self.last_report_path or ""}
+        lo_gan_day.ghi_lo(lo, **{k: v for k, v in self._lo_info.items() if k != "path"},
+                          can_xem=hd.get("dem_can_xem", 0), sai_lech=hd.get("dem_sai_lech", 0))
+
+    def _xuat_lai_xnnl_da_sua(self):
+        """Bước 5 bàn giao: quyết định ở tab Cần xử lý -> xuất lại file XNNL đã sửa
+        ('Sửa theo SC gốc' = ghi giá trị SC; 'Giữ nguyên hồ sơ' = không đụng ô đó)."""
+        giu = self.hang_doi.giu_nguyen_set() if hasattr(self, "hang_doi") else set()
+        if not giu and not getattr(self, "_da_xuat_lai", False):
+            return  # chưa có quyết định "giữ nguyên" nào: file XNNL đã sửa lúc chạy vẫn đúng
+        src = self.entry_excel.text().strip()
+        out = getattr(self, "last_corrected_path", None)
+        recons = ((getattr(self, "_master_res", None) or {}).get("xnnl_vs_sc") or {}).get("recons") or []
+        if not (src and os.path.exists(src) and out and recons):
+            return
+        try:
+            generate_corrected_excel_xnnl(src, out, recons, giu_nguyen=giu)
+            self._da_xuat_lai = True
+            self.lbl_status.setText(f"Đã cập nhật file XNNL đã sửa ({len(giu)} ô giữ nguyên hồ sơ).")
+        except Exception as e:
+            self.lbl_status.setText(f"Không ghi được file XNNL đã sửa (đang mở trong Excel?): {e}")
+
+    def _mo_tau_trong_hang_doi(self, vessel_id: str):
+        if self.hang_doi.chon_tau(vessel_id):
+            self.tabs.setCurrentWidget(self.tab_queue)
+        else:
+            self.lbl_status.setText(f"{vessel_id}: không có mục nào cần xử lý (đã khớp).")
+
+    def _cap_nhat_dem_hang_doi(self, con_sai_lech: int, con_can_xem: int):
+        self.lbl_kpi_diff.setText(str(con_sai_lech))
+        self.lbl_kpi_xem.setText(str(con_can_xem))
+        n = con_sai_lech + con_can_xem
+        self._xuat_lai_xnnl_da_sua()
+        info = getattr(self, "_lo_info", None)
+        if info:  # cập nhật kết quả lô trên trang chủ khi người dùng xử lý dần các mục
+            lo_gan_day.ghi_lo(info["path"], **{k: v for k, v in info.items() if k != "path"},
+                              can_xem=con_can_xem, sai_lech=con_sai_lech)
+        i = self.tabs.indexOf(self.tab_queue)
+        if i >= 0:
+            self.tabs.setTabText(i, f"Cần xử lý ({n})" if n else "Cần xử lý ✓")
 
     def populate_scx_table(self, scx_results: list):
         from sc_core.sc_excel_vs_pdf import RULE_CHECKS, rule_display, _to_float, _sc_label
@@ -1614,7 +1765,7 @@ class UnifiedSettingsWidget(QWidget):
 
     def on_key_typed(self, text: str):
         t = text.strip()
-        if t.startswith("AIzaSy"):
+        if t.startswith(("AIzaSy", "gw_")):
             idx = self.combo_source.findData("official")
             if idx >= 0:
                 self.combo_source.setCurrentIndex(idx)
@@ -1728,22 +1879,27 @@ class UnifiedSuiteApp(QMainWindow):
         hdr_bar = QHBoxLayout()
         hdr_bar.setContentsMargins(2, 0, 0, 0)
         hdr_bar.setSpacing(10)
-        self.lbl_logo_icon = QLabel("🚢")
+        from ui_icons import pixmap as _pixmap
+        self.lbl_logo_icon = QLabel()
+        self.lbl_logo_icon.setPixmap(_pixmap("anchor", "#FFFFFF", 22, width=2.0))
         self.lbl_logo_icon.setObjectName("SideLogo")
         self.lbl_logo_icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
         hdr_bar.addWidget(self.lbl_logo_icon)
 
         title_col = QVBoxLayout()
         title_col.setSpacing(0)
-        self.lbl_logo_title = QLabel("XNK & Thủy sản")
+        self.lbl_logo_title = QLabel("XNK eCoSys")
         self.lbl_logo_title.setObjectName("SideTitle")
         title_col.addWidget(self.lbl_logo_title)
-        self.lbl_logo_sub = QLabel("Hệ thống hợp nhất")
+        self.lbl_logo_sub = QLabel("C/O · Đối chiếu SC")
         self.lbl_logo_sub.setObjectName("SideSub")
         title_col.addWidget(self.lbl_logo_sub)
         hdr_bar.addLayout(title_col, stretch=1)
 
-        self.btn_toggle_sidebar = QPushButton("☰")
+        self.btn_toggle_sidebar = QPushButton()
+        from ui_icons import icon as _icon
+        self.btn_toggle_sidebar.setIcon(_icon("menu", ui.C["side_text"], "#FFFFFF"))
+        self.btn_toggle_sidebar.setIconSize(QSize(18, 18))
         self.btn_toggle_sidebar.setObjectName("SideToggle")
         self.btn_toggle_sidebar.setToolTip("Thu gọn / Mở rộng menu (Ctrl + B)")
         self.btn_toggle_sidebar.setFixedSize(34, 34)
@@ -1753,7 +1909,7 @@ class UnifiedSuiteApp(QMainWindow):
         self.sidebar_layout.addLayout(hdr_bar)
         self.sidebar_layout.addSpacing(18)
 
-        self.lbl_side_section = QLabel("PHÂN HỆ")
+        self.lbl_side_section = QLabel("LÀM VIỆC")
         self.lbl_side_section.setObjectName("SideSection")
         self.sidebar_layout.addWidget(self.lbl_side_section)
         self.sidebar_layout.addSpacing(4)
@@ -1761,10 +1917,15 @@ class UnifiedSuiteApp(QMainWindow):
         # Nút điều hướng: checkable + nhóm loại trừ -> đổi trang không phải dựng lại style (mượt hơn)
         self.nav_group = QButtonGroup(self)
         self.nav_group.setExclusive(True)
-        self.btn_nav_co = self.create_nav_button("📋   Khai báo C/O eCoSys", "📋", "Khai báo C/O eCoSys (Bộ Công Thương) [Ctrl+1]", active=True)
-        self.btn_nav_sc = self.create_nav_button("⚓   Đối chiếu SC Cảng cá", "⚓", "Đối chiếu SC Cảng cá & XNNL PMSX [Ctrl+2]")
-        self.btn_nav_copilot = self.create_nav_button("🤖   Trợ lý AI Copilot", "🤖", "Trợ lý AI Copilot nghiệp vụ C/O & IUU thủy sản [Ctrl+3]")
-        self.btn_nav_settings = self.create_nav_button("⚙   Cài đặt API", "⚙", "Cài đặt API Key Gemini & APIZ dùng chung [Ctrl+4]")
+        self.btn_nav_lo = self.create_nav_button("Lô hàng", "home", "Lô hàng: kéo thả thư mục hồ sơ, xem lô gần đây [Ctrl+0]")
+        self.btn_nav_lo.setCheckable(True)
+        self.nav_group.addButton(self.btn_nav_lo, 4)
+        self.btn_nav_lo.clicked.connect(lambda _=False: self.switch_page(4))
+        self.sidebar_layout.addWidget(self.btn_nav_lo)
+        self.btn_nav_co = self.create_nav_button("Khai báo C/O eCoSys", "doc", "Khai báo C/O eCoSys (Bộ Công Thương) [Ctrl+1]", active=True)
+        self.btn_nav_sc = self.create_nav_button("Đối chiếu SC Cảng cá", "anchor", "Đối chiếu SC Cảng cá & XNNL PMSX [Ctrl+2]")
+        self.btn_nav_copilot = self.create_nav_button("Trợ lý AI Copilot", "sparkle", "Trợ lý AI Copilot nghiệp vụ C/O & IUU thủy sản [Ctrl+3]")
+        self.btn_nav_settings = self.create_nav_button("Cài đặt API", "settings", "Cài đặt API Key Gemini & APIZ dùng chung [Ctrl+4]")
         for i, b in enumerate((self.btn_nav_co, self.btn_nav_sc, self.btn_nav_copilot, self.btn_nav_settings)):
             b.setCheckable(True)
             self.nav_group.addButton(b, i)
@@ -1778,11 +1939,11 @@ class UnifiedSuiteApp(QMainWindow):
         self.sidebar_layout.addWidget(divider)
         self.sidebar_layout.addSpacing(6)
 
-        self.btn_nav_guide = self.create_nav_button("📖   Hướng dẫn sử dụng", "📖", "Cẩm nang hướng dẫn sử dụng (F1)")
+        self.btn_nav_guide = self.create_nav_button("Hướng dẫn sử dụng", "book", "Cẩm nang hướng dẫn sử dụng (F1)")
         self.btn_nav_guide.clicked.connect(self.show_user_guide_dialog)
         self.sidebar_layout.addWidget(self.btn_nav_guide)
 
-        self.btn_nav_update = self.create_nav_button("🔄   Cập nhật phiên bản", "🔄", "Kiểm tra và cập nhật phiên bản mới qua GitHub")
+        self.btn_nav_update = self.create_nav_button("Cập nhật phiên bản", "refresh", "Kiểm tra và cập nhật phiên bản mới qua GitHub")
         self.btn_nav_update.clicked.connect(self.show_github_update_dialog)
         self.sidebar_layout.addWidget(self.btn_nav_update)
         self.sidebar_layout.addSpacing(8)
@@ -1796,8 +1957,14 @@ class UnifiedSuiteApp(QMainWindow):
                         app_ver = json.load(_vf).get("version", app_ver)
                     break
         except Exception:
-            pass
-        self.lbl_version = QLabel(f"v{app_ver} • Gemini 3.8 Flash\n© Ngô Quốc Tiến • 0905387808")
+            _ghi_loi_bo_qua()
+        nguon = "Cổng AI công ty" if str(self.shared_config.get("api_source", "")) != "apiz" else "APIZ (key cá nhân)"
+        self.lbl_side_status = QLabel(f"<span style='color:#34D399'>●</span>&nbsp; {nguon}")
+        self.lbl_side_status.setToolTip("Model AI: gemini-3.8-flash")
+        self.lbl_side_status.setObjectName("SideStatus")
+        self.lbl_side_status.setStyleSheet("QLabel#SideStatus { color: #8EA3C2; }")
+        self.sidebar_layout.addWidget(self.lbl_side_status)
+        self.lbl_version = QLabel(f"v{app_ver} · © Ngô Quốc Tiến · 0905387808")
         self.lbl_version.setObjectName("SideVersion")
         self.sidebar_layout.addWidget(self.lbl_version)
 
@@ -1828,6 +1995,12 @@ class UnifiedSuiteApp(QMainWindow):
         self.page_settings = UnifiedSettingsWidget(self)
         self.stack.addWidget(self.page_settings)
 
+        # Trang 4: Lô hàng (trang chủ hồ sơ) — giữ chỉ số 0..3 cũ để không đổi phím tắt Ctrl+1..4
+        self.page_lo = LoHangWidget(self)
+        self.page_lo.mo_lo.connect(self.mo_lo_hang)
+        self.page_lo.xem_lo.connect(self.xem_lo_hang)
+        self.stack.addWidget(self.page_lo)
+
         # Sửa lỗi mất ký tự '&' trên tab/khung/nút + cuộn bảng mượt theo pixel
         ui.fix_ampersands(self)
         ui.smooth_item_views(self)
@@ -1838,6 +2011,7 @@ class UnifiedSuiteApp(QMainWindow):
         QShortcut(QKeySequence("Ctrl+2"), self, lambda: self.switch_page(1))
         QShortcut(QKeySequence("Ctrl+3"), self, lambda: self.switch_page(2))
         QShortcut(QKeySequence("Ctrl+4"), self, lambda: self.switch_page(3))
+        QShortcut(QKeySequence("Ctrl+0"), self, lambda: self.switch_page(4))
         QShortcut(QKeySequence(Qt.Key.Key_F1), self, self.show_user_guide_dialog)
 
     def _polish_co_page(self):
@@ -1871,15 +2045,25 @@ class UnifiedSuiteApp(QMainWindow):
                 lb.setObjectName("PageTitle")
                 lb.setStyleSheet("")
             elif "KILOGRAM" in t:
-                lb.setText("🛡 Đơn vị: KILOGRAM (đã khóa)")
+                lb.setText("Đơn vị: KILOGRAM (đã khóa)")
                 lb.setObjectName("BadgeSuccess")
                 lb.setStyleSheet("")
+        # Thiết kế "Hải trình": tab ngắn + icon, form 2 cột nhãn trên, nút không emoji
+        try:
+            from ui_co_polish import lam_gon_trang_co
+            lam_gon_trang_co(self.page_co, co)
+        except Exception as e:
+            print(f"Không làm gọn được trang C/O: {e}")
 
-    def create_nav_button(self, full_text: str, icon_text: str, tooltip: str, active: bool = False) -> QPushButton:
-        btn = QPushButton(full_text)
+    def create_nav_button(self, full_text: str, icon_name: str, tooltip: str, active: bool = False) -> QPushButton:
+        """Nút menu: icon nét (ui_icons) + chữ; thu gọn menu thì chỉ còn icon."""
+        from ui_icons import icon as _icon
+        btn = QPushButton("  " + full_text)
         btn.setObjectName("NavButton")
-        btn.setProperty("full_text", full_text)
-        btn.setProperty("icon_text", icon_text)
+        btn.setIcon(_icon(icon_name, ui.C["side_text"], "#FFFFFF"))
+        btn.setIconSize(QSize(19, 19))
+        btn.setProperty("full_text", "  " + full_text)
+        btn.setProperty("icon_text", "")
         btn.setProperty("collapsed", False)
         btn.setToolTip(tooltip)
         btn.setFixedHeight(42)
@@ -1900,8 +2084,9 @@ class UnifiedSuiteApp(QMainWindow):
         collapsed = self.is_sidebar_collapsed
         start = self.sidebar.width()
         end = self.sidebar_collapsed_width if collapsed else self.sidebar_expanded_width
-        text_widgets = [self.lbl_logo_title, self.lbl_logo_sub, self.lbl_side_section, self.lbl_version, self.lbl_logo_icon]
-        buttons = [self.btn_nav_co, self.btn_nav_sc, self.btn_nav_copilot, self.btn_nav_settings,
+        text_widgets = [self.lbl_logo_title, self.lbl_logo_sub, self.lbl_side_section, self.lbl_version, self.lbl_logo_icon,
+                        self.lbl_side_status]
+        buttons = [self.btn_nav_lo, self.btn_nav_co, self.btn_nav_sc, self.btn_nav_copilot, self.btn_nav_settings,
                    self.btn_nav_guide, self.btn_nav_update]
 
         def set_buttons(c):
@@ -1927,6 +2112,26 @@ class UnifiedSuiteApp(QMainWindow):
         b = self.nav_group.button(idx)
         if b is not None and not b.isChecked():
             b.setChecked(True)
+        if idx == 4:
+            self.page_lo.lam_moi()
+
+    def xem_lo_hang(self, path: str):
+        """Trang chủ: thả/chọn thư mục -> nhận diện chứng từ (dùng bộ quét của trang SC) -> hiện thẻ 'Lô đang mở'."""
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            self.page_sc.entry_folder.setText(path)
+            self.page_sc.auto_detect_folder(path)
+            self.page_lo.hien_lo_dang_mo(path, self.page_sc.tom_tat_chung_tu())
+        finally:
+            QApplication.restoreOverrideCursor()
+
+    def mo_lo_hang(self, path: str, chay_ngay: bool = False):
+        """Từ trang Lô hàng: mở thư mục ở trang Đối chiếu SC (tự nhận chứng từ), tùy chọn chạy luôn."""
+        self.switch_page(1)
+        self.page_sc.entry_folder.setText(path)
+        self.page_sc.auto_detect_folder(path)
+        if chay_ngay:
+            self.page_sc.start_reconciliation()
 
     def show_user_guide_dialog(self):
         dlg = UserGuideDialog(self)
@@ -1959,12 +2164,12 @@ class UnifiedSuiteApp(QMainWindow):
                         w.requestInterruption()
                         w.wait(400)
                     except Exception:
-                        pass
+                        _ghi_loi_bo_qua()
             if hasattr(self.co_app_instance, 'inspector_doc') and self.co_app_instance.inspector_doc:
                 try:
                     self.co_app_instance.inspector_doc.close()
                 except Exception:
-                    pass
+                    _ghi_loi_bo_qua()
                 self.co_app_instance.inspector_doc = None
 
         # 2. Dừng an toàn luồng đối chiếu SC
@@ -1974,7 +2179,7 @@ class UnifiedSuiteApp(QMainWindow):
                     self.page_sc.worker.requestInterruption()
                     self.page_sc.worker.wait(500)
             except Exception:
-                pass
+                _ghi_loi_bo_qua()
 
         # 3. Dừng an toàn luồng Copilot
         if hasattr(self, 'page_copilot') and hasattr(self.page_copilot, 'worker') and self.page_copilot.worker:
@@ -1983,7 +2188,7 @@ class UnifiedSuiteApp(QMainWindow):
                     self.page_copilot.worker.requestInterruption()
                     self.page_copilot.worker.wait(400)
             except Exception:
-                pass
+                _ghi_loi_bo_qua()
 
         # 4. Tắt máy chủ Stream server cục bộ
         try:
@@ -1994,7 +2199,7 @@ class UnifiedSuiteApp(QMainWindow):
                 import local_stream_server
                 local_stream_server.stop_local_stream_server()
             except Exception:
-                pass
+                _ghi_loi_bo_qua()
 
         # 5. Giải phóng Mutex Windows
         global mutex_handle
@@ -2004,7 +2209,7 @@ class UnifiedSuiteApp(QMainWindow):
                 ctypes.windll.kernel32.CloseHandle(mutex_handle)
                 mutex_handle = None
             except Exception:
-                pass
+                _ghi_loi_bo_qua()
 
         event.accept()
         QApplication.quit()
@@ -2012,6 +2217,11 @@ class UnifiedSuiteApp(QMainWindow):
 
 if __name__ == "__main__":
     import ctypes
+    try:  # bản .exe không có console: print()/lỗi chưa bắt -> %APPDATA%\XNK_eCoSys_SC\nhat_ky.log
+        from nhat_ky_loi import chuyen_print_vao_file
+        chuyen_print_vao_file()
+    except Exception:
+        _ghi_loi_bo_qua()
     ui.setup_high_dpi()  # phải gọi trước khi tạo QApplication
     # Kiểm tra chống mở đè nhiều tiến trình (Single-Instance Protection)
     mutex_handle = ctypes.windll.kernel32.CreateMutexW(None, False, "Global\\XNK_eCoSys_SC_v3_SingleInstance")

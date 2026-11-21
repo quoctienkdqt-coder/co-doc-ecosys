@@ -43,3 +43,10 @@ ehthumbs.db
 Desktop.ini
 $RECYCLE.BIN/
 .DS_Store
+
+# Du lieu kiem thu, sao luu, ban giao noi bo, chu ky (khong dua len Git)
+_saoluu_*/
+bo_de_chuan/
+*.sig
+b*n giao.md
+

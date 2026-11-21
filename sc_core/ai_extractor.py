@@ -1,3 +1,8 @@
+try:  # ghi lỗi bị bỏ qua vào loi_bo_qua.log (thay cho except: pass im lặng)
+    from nhat_ky_loi import ghi as _ghi_loi_bo_qua
+except Exception:  # pragma: no cover
+    def _ghi_loi_bo_qua(*_a, **_k):
+        return None
 import os
 import sys
 import json
@@ -6,6 +11,413 @@ import hashlib
 import fitz
 
 CONFIG_FILE_NAME = "ai_config.json"
+SC_CACHE_VER = "v4"  # đổi mỗi khi sửa prompt/luật đọc SC để không dùng lại kết quả đọc theo cách cũ
+TOL_KG = 0.5
+
+
+def _ngay(v):
+    from datetime import datetime as _dt
+    m = re.search(r"(\d{1,2})\s*[/\-.]\s*(\d{1,2})\s*[/\-.]\s*(\d{4})", str(v or ""))
+    try:
+        return _dt(int(m.group(3)), int(m.group(2)), int(m.group(1))) if m else None
+    except ValueError:
+        return None
+
+
+def _nghi(r, field_list, msg):
+    r.setdefault("nghi_ngo", []).append(msg)
+    r["o_nghi_ngo"] = sorted(set(r.get("o_nghi_ngo", [])) | set(field_list))
+
+
+def danh_dau_nghi_ngo(records):
+    """Lớp 4 + 5: luật logic từng dòng và sổ tàu. Gắn r['nghi_ngo'] (mô tả) và r['o_nghi_ngo'] (tên trường)."""
+    for r in records:
+        r.pop("nghi_ngo", None)
+        r.pop("o_nghi_ngo", None)
+        # 1. KL mua không bao giờ > KL khai thác -> AI đọc đảo cột: đổi lại, vẫn đánh dấu để đọc lại xác nhận
+        mua, kt = r.get("req_catch_kg") or 0.0, r.get("total_catch_kg") or 0.0
+        if kt > 0 and mua > kt + TOL_KG:
+            r["req_catch_kg"], r["total_catch_kg"] = kt, mua
+            _nghi(r, ["req_catch_kg", "total_catch_kg"], f"AI đọc đảo cột KL (mua {mua:g} > khai thác {kt:g}) - đã tự đổi lại")
+        # 2. Hạn GP trước ngày bốc dỡ: thường do lấy nhầm năm trong số GP -> nghi ngờ, chưa kết luận hết hạn
+        han, boc = _ngay(r.get("licence_exp")), _ngay(r.get("landing_date"))
+        if han and boc and han < boc:
+            nam_so_gp = re.findall(r"/(\d{4})/", str(r.get("licence_no") or ""))
+            goi_y = " (trùng năm trong số GP - rất có thể đọc nhầm)" if str(han.year) in nam_so_gp else ""
+            _nghi(r, ["licence_exp"], f"Hạn GP {han:%d/%m/%Y} trước ngày bốc dỡ {boc:%d/%m/%Y}{goi_y} - cần xem ảnh SC")
+    # 3. Sổ tàu đã xác nhận
+    try:
+        from sc_core import so_tau
+        so_tau.kiem_tra(records)
+    except Exception as e:
+        print(f"Bỏ qua kiểm tra sổ tàu: {e}")
+
+
+def kiem_tra_tong(records, printed_total, to_float):
+    out = []
+    if isinstance(printed_total, dict):
+        for k, ten in (("req_catch_kg", "KL nguyên liệu mua"), ("total_catch_kg", "KL khai thác")):
+            raw = printed_total.get(k)
+            if raw in (None, "", "null"):
+                continue
+            in_giay = to_float(raw)
+            tong = sum(r.get(k) or 0.0 for r in records)
+            if in_giay and abs(tong - in_giay) > TOL_KG:
+                out.append(f"Tổng {ten} các dòng đọc được = {tong:,.0f} kg nhưng dòng TOTAL in trên SC = {in_giay:,.0f} kg "
+                           f"(lệch {tong - in_giay:+,.0f}) - cần xem lại SC")
+    return out
+
+
+def kiem_tra_sc_sau_khi_doc(records, printed_total=None, to_float=None, doc_lai=None):
+    """
+    Chạy NGAY SAU khi AI đọc SC:
+      - Lớp 4 (luật logic) + lớp 5 (sổ tàu): đánh dấu ô nghi ngờ (không tốn API)
+      - Lớp 6: nếu có ô nghi ngờ và có hàm doc_lai -> đọc lại RIÊNG các ô đó (ảnh nét hơn), rồi kiểm tra lại
+      - Tổng các dòng phải = dòng TOTAL in trên giấy
+    Sửa trực tiếp records; trả về danh sách cảnh báo cho người dùng.
+    """
+    to_float = to_float or (lambda v: float(v or 0))
+    danh_dau_nghi_ngo(records)
+    if doc_lai and any(r.get("o_nghi_ngo") for r in records):
+        try:
+            doc_lai([r for r in records if r.get("o_nghi_ngo")])
+        except Exception as e:
+            print(f"Đọc lại ô khó thất bại: {e}")
+        danh_dau_nghi_ngo(records)
+    canh_bao = kiem_tra_tong(records, printed_total, to_float)
+    for r in records:
+        for n in r.get("da_doc_lai", []):
+            canh_bao.append(f"{r.get('vessel_id')}: đã đọc lại - {n}")
+        for n in r.get("nghi_ngo", []):
+            canh_bao.append(f"{r.get('vessel_id')}: CẦN XEM - {n}")
+    return canh_bao
+
+
+DOC_LAI_PROMPT = """Ảnh là 1 trang Giấy xác nhận nguyên liệu thủy sản khai thác (Mẫu số 01).
+Hãy ĐỌC LẠI THẬT CẨN THẬN chỉ các ô sau (đúng dòng của số đăng ký tàu ghi kèm):
+{yeu_cau}
+Quy tắc:
+- licence_exp: ngày hết hạn ở DÒNG CUỐI của ô "Số giấy phép khai thác - thời hạn đến" (thường có dấu nháy ' đứng trước). KHÔNG lấy năm trong số giấy phép.
+- req_catch_kg: số ở cột (11) "Tổng khối lượng nguyên liệu mua từ tàu cá (kg)"; total_catch_kg: số ở cột (12) "Tổng khối lượng khai thác của tàu cá (kg)". Dấu chấm là phân cách hàng nghìn (1.320 = 1320).
+- owner: họ tên ở cột (2), giữ nguyên dấu tiếng Việt.
+- Với licence_exp: CHÉP NGUYÊN VĂN toàn bộ chữ trong ô cột (7) vào "licence_cell_text" (giữ xuống dòng bằng \\n, giữ dấu nháy), từng ký tự một.
+- Ô nào không đọc rõ: ghi null, KHÔNG đoán.
+Chỉ trả JSON: {{"vessels": [{{"vessel_id": "...", "licence_cell_text": "...", "<trường>": "<giá trị>"}}]}}"""
+
+
+def _hoi_anh(img_bytes, prompt, provider, key, model, base_url):
+    """Gửi 1 ảnh + prompt, trả dict JSON (hoặc {})."""
+    import base64
+    if provider == "gemini":
+        from app_config_manager import tao_google_client
+        from google.genai import types
+        client = tao_google_client(key)
+        resp = client.models.generate_content(
+            model=model, contents=[types.Part.from_bytes(data=img_bytes, mime_type="image/jpeg"), prompt],
+            config=types.GenerateContentConfig(response_mime_type="application/json", temperature=0.0))
+        txt = resp.text or ""
+    else:
+        from openai import OpenAI
+        client = OpenAI(api_key=key, base_url=base_url)
+        msgs = [{"role": "user", "content": [
+            {"type": "text", "text": prompt},
+            {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64," + base64.b64encode(img_bytes).decode(),
+                                                "detail": "high"}}]}]
+        resp = client.chat.completions.create(model=model, messages=msgs, temperature=0.0)
+        txt = resp.choices[0].message.content or ""
+    m = re.search(r"\{[\s\S]*\}", txt)
+    try:
+        return json.loads(m.group(0)) if m else {}
+    except Exception:
+        return {}
+
+
+_OCR = None
+_OCR_LOCK = __import__("threading").Lock()
+
+
+def _ocr_engine():
+    """RapidOCR nạp mô hình mất vài giây -> chỉ tạo 1 lần cho cả phiên."""
+    global _OCR
+    with _OCR_LOCK:
+        if _OCR is None:
+            from rapidocr_onnxruntime import RapidOCR
+            _OCR = RapidOCR()
+    return _OCR
+
+
+def _vi_tri_cac_dong(page):
+    """OCR cục bộ (RapidOCR, không tốn API) -> {vessel_key: (y_giữa, chiều_cao_dòng)} theo tọa độ PDF."""
+    from sc_core.reconciler import clean_vessel_key
+    import statistics
+    out = {}
+    try:
+        dpi = 150
+        # Chỉ OCR dải trái (cột số đăng ký tàu nằm sát lề trái Mẫu 01) -> nhanh hơn nhiều so với cả trang.
+        # Thử dải 25% trước; không thấy số tàu nào thì OCR cả trang.
+        res = None
+        for frac in (0.25, 1.0):
+            clip = fitz.Rect(0, 0, page.rect.width * frac, page.rect.height)
+            res, _ = _ocr_engine()(page.get_pixmap(dpi=dpi, clip=clip).tobytes("png"))
+            if res and any(re.search(r"[A-Za-zĐđÐ]{2,3}\s*-\s*\d{4,5}", b[1]) for b in res):
+                break
+        vb = []
+        for b in res or []:
+            if re.search(r"[A-Za-zĐđÐ]{2,3}\s*-\s*\d{4,5}", b[1]):
+                ys = [p[1] for p in b[0]]
+                vb.append((clean_vessel_key(b[1]), (min(ys) + max(ys)) / 2 * 72 / dpi))
+        yc = sorted(y for _, y in vb)
+        gap = statistics.median([b - a for a, b in zip(yc, yc[1:])]) if len(yc) > 1 else 55.0
+        out = {k: (y, gap) for k, y in vb}
+    except Exception as e:
+        print(f"OCR định vị dòng lỗi: {e}")
+    return out
+
+
+_CAT_LOCK = __import__("threading").RLock()
+
+
+def cat_dai_dong(file_path, page_no, vessel_id, dpi=250, x_frac=1.0, x_start=0.0):
+    """Ảnh JPEG của đúng 1 dòng tàu trên trang (None nếu không định vị được). An toàn khi gọi từ nhiều luồng.
+    x_start..x_frac: phần bề ngang cần lấy (0..1) — vd 0..0.62 cho cột tên/GP, 0.35..1 cho cột ngày/kg."""
+    with _CAT_LOCK:  # PyMuPDF + RapidOCR không an toàn đa luồng
+        return _cat_dai_dong(file_path, page_no, vessel_id, dpi, x_frac, x_start)
+
+
+_VI_TRI_CACHE = {}
+
+
+def _vi_tri_dong_cache(file_path, page_no, page):
+    ck = (file_path, page_no)
+    if ck not in _VI_TRI_CACHE:
+        _VI_TRI_CACHE[ck] = _vi_tri_cac_dong(page)
+    return _VI_TRI_CACHE[ck]
+
+
+def _cat_dai_dong(file_path, page_no, vessel_id, dpi=250, x_frac=1.0, x_start=0.0):
+    from sc_core.reconciler import clean_vessel_key
+    doc = fitz.open(file_path)
+    try:
+        if not page_no or page_no > len(doc):
+            return None
+        page = doc[page_no - 1]
+        pos = _vi_tri_dong_cache(file_path, page_no, page).get(clean_vessel_key(vessel_id))
+        if not pos:
+            return None
+        y, gap = pos
+        clip = fitz.Rect(page.rect.width * x_start, max(0, y - gap * 0.55), page.rect.width * x_frac,
+                         min(page.rect.height, y + gap * 0.55))
+        return page.get_pixmap(dpi=dpi, clip=clip).tobytes("jpeg")
+    finally:
+        doc.close()
+
+
+def cat_o_ten(file_path, page_no, vessel_id, dpi=600):
+    """
+    Ảnh JPEG CHỈ ô họ tên chủ tàu của đúng dòng tàu (không phụ thuộc bố cục cột từng cảng):
+    OCR dải dòng -> ô chữ đầu tiên bên phải ô số tàu = ô tên -> cắt sát ô đó ở độ phân giải cao.
+    (Qua cổng AI công ty, ảnh càng sát ô tên thì dấu tiếng Việt càng đọc đúng.)
+    """
+    from sc_core.reconciler import clean_vessel_key
+    with _CAT_LOCK:
+        doc = fitz.open(file_path)
+        try:
+            if not page_no or page_no > len(doc):
+                return None
+            page = doc[page_no - 1]
+            pos = _vi_tri_dong_cache(file_path, page_no, page).get(clean_vessel_key(vessel_id))
+            if not pos:
+                return None
+            y, gap = pos
+            W = page.rect.width
+            y0, y1 = max(0, y - gap * 0.5), min(page.rect.height, y + gap * 0.5)
+            # OCR nửa trái CẢ TRANG 1 lần (dải mỏng RapidOCR hay trả rỗng), lọc các ô chữ nằm trên dòng này
+            ck = ("hop", file_path, page_no)
+            if ck not in _VI_TRI_CACHE:
+                sdpi = 170
+                res, _ = _ocr_engine()(page.get_pixmap(dpi=sdpi, clip=fitz.Rect(0, 0, W * 0.5, page.rect.height)).tobytes("png"))
+                s = 72 / sdpi
+                _VI_TRI_CACHE[ck] = [(min(p[0] for p in b[0]) * s, max(p[0] for p in b[0]) * s,
+                                      (min(p[1] for p in b[0]) + max(p[1] for p in b[0])) / 2 * s, b[1]) for b in res or []]
+            hop = sorted(((x0, x1, t) for x0, x1, yc, t in _VI_TRI_CACHE[ck] if y0 <= yc <= y1), key=lambda t: t[0])
+            k = 1.0  # tọa độ đã ở đơn vị PDF
+            vx = None
+            for x0, x1, t in hop:
+                if clean_vessel_key(t) == clean_vessel_key(vessel_id) or re.search(r"[A-Za-zĐđÐ]{2,3}\s*-\s*\d{4,5}", t):
+                    vx = x1
+                    break
+            if vx is None:
+                return None
+            ten = [(x0, x1) for x0, x1, t in hop if x0 > vx + 1 and re.search(r"[^\W\d_]{2,}", t)]
+            if not ten:
+                return None
+            # gộp các mảnh chữ liền nhau của cùng ô tên (tên có thể bị OCR tách nhiều mảnh / 2 dòng)
+            a, b = ten[0]
+            for x0, x1 in ten[1:]:
+                if x0 - b < 14:
+                    b = max(b, x1)
+                else:
+                    break
+            pad = 7
+            clip = fitz.Rect(max(0, (a - pad) * k), y0, min(W, (b + pad) * k), y1)
+            return page.get_pixmap(dpi=dpi, clip=clip).tobytes("jpeg")
+        finally:
+            doc.close()
+
+
+XAC_MINH_TEN_PROMPT ="""Ảnh là 1 DÒNG (dải cắt) của Giấy xác nhận nguyên liệu thủy sản khai thác.
+Đọc họ tên ở cột "Họ và tên chủ tàu/thuyền trưởng" của tàu {vessel_id}.
+Đang phân vân giữa các cách viết sau (chỉ khác nhau ở dấu):
+{ung_vien}
+{chu_khac}
+Nhìn THẬT KỸ từng dấu thanh (sắc ´, huyền `, hỏi ˀ, ngã ~, nặng .) và dấu mũ/râu/trăng (â ê ô ơ ư ă) trên ảnh.
+Phân biệt: "a" KHÔNG có gì phía trên chữ (chỉ có dấu thanh) ; "ă" có nét cong hình trăng (˘) ; "â" có mũ (^).
+Chép lại tên ĐÚNG NHƯ TRÊN ẢNH (có thể khác các cách viết trên nếu ảnh ghi khác).
+Chỉ trả JSON: {{"ten": "<họ tên đúng như ảnh>", "chac_chan": true hoặc false}}"""
+
+
+def xac_minh_ten(file_path, page_no, vessel_id, ung_vien, provider, key, model, base_url):
+    """Lớp 6 cho tên: cắt đúng dòng, hỏi AI chọn cách viết. Trả tên (str) nếu AI chắc chắn, ngược lại None."""
+    ds = "\n".join(f"{i + 1}) {t}" for i, t in enumerate(ung_vien))
+    # Chỉ rõ TỪ nào đang khác nhau để AI tập trung nhìn đúng chỗ
+    tu = [t.split() for t in ung_vien]
+    khac = []
+    for j in range(max(len(x) for x in tu)):
+        bien = sorted({x[j] for x in tu if j < len(x)})
+        if len(bien) > 1:
+            khac.append(f"từ thứ {j + 1}: " + " hay ".join(f'"{b}"' for b in bien))
+    chu_khac = ("Các cách viết chỉ khác nhau ở " + "; ".join(khac) + ".") if khac else ""
+    # 1) chỉ ô tên (600 dpi, định vị bằng OCR) -> 2) cột số tàu + tên (~1/3 bề ngang) -> 3) cả dòng
+    def anh():
+        try:
+            yield cat_o_ten(file_path, page_no, vessel_id)
+        except Exception as e:
+            print(f"Cắt ô tên lỗi: {e}")
+        yield cat_dai_dong(file_path, page_no, vessel_id, dpi=400, x_frac=0.32)
+        yield cat_dai_dong(file_path, page_no, vessel_id, dpi=300, x_frac=1.0)
+    for img in anh():
+        if img is None:
+            continue
+        data = _hoi_anh(img, XAC_MINH_TEN_PROMPT.format(vessel_id=vessel_id, ung_vien=ds, chu_khac=chu_khac),
+                        provider, key, model, base_url)
+        ten = str(data.get("ten") or "").strip()
+        if ten and data.get("chac_chan") in (True, "true", "True"):
+            return ten
+    return None
+
+
+def tao_ham_doc_lai(file_path, provider, key, model, base_url):
+    """Lớp 6: trả hàm doc_lai(records) - mỗi trang có ô nghi ngờ gửi 1 ảnh 250 dpi kèm danh sách ô cần đọc."""
+    if not str(file_path).lower().endswith(".pdf"):
+        return None
+
+    def hoi(img_bytes, prompt):
+        import base64
+        if provider == "gemini":
+            from app_config_manager import tao_google_client
+            from google.genai import types
+            client = tao_google_client(key)
+            resp = client.models.generate_content(
+                model=model, contents=[types.Part.from_bytes(data=img_bytes, mime_type="image/jpeg"), prompt],
+                config=types.GenerateContentConfig(response_mime_type="application/json", temperature=0.0))
+            txt = resp.text or ""
+        else:
+            from openai import OpenAI
+            client = OpenAI(api_key=key, base_url=base_url)
+            msgs = [{"role": "user", "content": [
+                {"type": "text", "text": prompt},
+                {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64," + base64.b64encode(img_bytes).decode(),
+                                                    "detail": "high"}}]}]
+            resp = client.chat.completions.create(model=model, messages=msgs, temperature=0.0)
+            txt = resp.choices[0].message.content or ""
+        m = re.search(r"\{[\s\S]*\}", txt)
+        return json.loads(m.group(0)) if m else {}
+
+    def vi_tri_dong(page, cache, pno):
+        """OCR cục bộ (không tốn API) -> {vessel_key: (y_giữa, chiều_cao_dòng)} theo tọa độ PDF."""
+        if pno in cache:
+            return cache[pno]
+        from sc_core.reconciler import clean_vessel_key
+        import statistics
+        out = {}
+        try:
+            from rapidocr_onnxruntime import RapidOCR
+            dpi = 150
+            res, _ = RapidOCR()(page.get_pixmap(dpi=dpi).tobytes("png"))
+            vb = []
+            for b in res or []:
+                if re.search(r"[A-Za-zĐđÐ]{2,3}\s*-\s*\d{4,5}", b[1]):
+                    ys = [p[1] for p in b[0]]
+                    vb.append((clean_vessel_key(b[1]), (min(ys) + max(ys)) / 2 * 72 / dpi))
+            yc = sorted(y for _, y in vb)
+            gap = statistics.median([b - a for a, b in zip(yc, yc[1:])]) if len(yc) > 1 else 55.0
+            out = {k: (y, gap) for k, y in vb}
+        except Exception as e:
+            print(f"OCR định vị dòng lỗi: {e}")
+        cache[pno] = out
+        return out
+
+    def doc_lai(records):
+        from sc_core.reconciler import clean_vessel_key
+        import concurrent.futures
+        doc = fitz.open(file_path)
+        ocr_cache, viec = {}, []
+        try:
+            for r in records:
+                pno = r.get("page") or 0
+                if not pno or pno > len(doc):
+                    continue
+                page = doc[pno - 1]
+                pos = vi_tri_dong(page, ocr_cache, pno).get(clean_vessel_key(r.get("vessel_id")))
+                if pos:  # cắt đúng 1 dải ngang của dòng tàu -> AI không lẫn dòng, không bị số GP "lôi kéo"
+                    y, gap = pos
+                    clip = fitz.Rect(0, max(0, y - gap * 0.55), page.rect.width, min(page.rect.height, y + gap * 0.55))
+                    img = page.get_pixmap(dpi=250, clip=clip).tobytes("jpeg")
+                    p = DOC_LAI_PROMPT.replace("Ảnh là 1 trang Giấy", "Ảnh là 1 DÒNG (dải cắt) của Giấy")
+                else:
+                    img = page.get_pixmap(dpi=250).tobytes("jpeg")
+                    p = DOC_LAI_PROMPT
+                viec.append((r, img, p.format(yeu_cau=f"- Tàu {r.get('vessel_id')}: {', '.join(r['o_nghi_ngo'])}")))
+        finally:
+            doc.close()
+
+        def mot(job):
+            r, img, prompt = job
+            try:
+                return r, hoi(img, prompt)
+            except Exception as e:
+                print(f"Đọc lại {r.get('vessel_id')} lỗi: {e}")
+                return r, {}
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as ex:
+            ket_qua = list(ex.map(mot, viec))
+        if True:
+            for r, data in ket_qua:
+                theo_tau = {clean_vessel_key(v.get("vessel_id")): v for v in (data.get("vessels") or [])}
+                if True:
+                    v = theo_tau.get(clean_vessel_key(r.get("vessel_id")))
+                    if not v:
+                        continue
+                    for f in r["o_nghi_ngo"]:
+                        moi = v.get(f)
+                        if f == "licence_exp" and v.get("licence_cell_text"):
+                            # Hạn GP = ngày CUỐI CÙNG trong ô (số GP có năm nhưng không có dạng dd/mm/yyyy)
+                            ds = re.findall(r"(\d{1,2})\s*[/\-.]\s*(\d{1,2})\s*[/\-.]\s*(\d{4})", str(v["licence_cell_text"]))
+                            if ds:
+                                d_, m_, y_ = ds[-1]
+                                moi = f"{int(d_):02d}/{int(m_):02d}/{y_}"
+                        if moi in (None, "", "null"):
+                            continue
+                        if f.endswith("_kg"):
+                            moi = float(re.sub(r"[^\d]", "", str(moi)) or 0) if not isinstance(moi, (int, float)) else float(moi)
+                        cu = r.get(f)
+                        if str(cu) != str(moi):
+                            r.setdefault("da_doc_lai", []).append(f"{f}: {cu} -> {moi}")
+                            r[f] = moi
+                        else:
+                            r.setdefault("da_doc_lai", []).append(f"{f}: xác nhận {moi}")
+
+    return doc_lai
 
 def get_config_dir():
     local_app_data = os.environ.get("LOCALAPPDATA")
@@ -40,7 +452,7 @@ def load_ai_config():
                 data = json.load(f)
                 default_cfg.update(data)
         except Exception:
-            pass
+            _ghi_loi_bo_qua()
             
     return default_cfg
 
@@ -85,13 +497,15 @@ def test_ai_connection(provider, api_key, model_name=None, base_url=None):
             return False, f"Lỗi kết nối APIZ.vn: {e}", None
 
     elif provider.lower() == "gemini":
-        m_req = model_name or "gemini-2.5-flash"
-        candidate_models = [m_req, "gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]
+        # Cổng AI công ty chỉ cho phép gemini-3.8-flash (kiểm 20/11/2026) -> 3.8 đứng đầu, bản cũ chỉ dự phòng
+        m_req = model_name or "gemini-3.8-flash"
+        candidate_models = list(dict.fromkeys([m_req, "gemini-3.8-flash", "gemini-2.5-flash", "gemini-2.0-flash"]))
 
         last_err = ""
         try:
             from google import genai
-            client = genai.Client(api_key=api_key)
+            from app_config_manager import tao_google_client
+            client = tao_google_client(api_key)
             for m in candidate_models:
                 try:
                     response = client.models.generate_content(
@@ -107,22 +521,8 @@ def test_ai_connection(provider, api_key, model_name=None, base_url=None):
         except Exception as e:
             last_err = str(e)
 
-        # Fallback test with older generativeai if needed
-        try:
-            import google.generativeai as legacy_genai
-            legacy_genai.configure(api_key=api_key)
-            for lm in ["gemini-1.5-flash", "gemini-1.5-pro"]:
-                try:
-                    m_leg = legacy_genai.GenerativeModel(lm)
-                    res = m_leg.generate_content("Ping")
-                    if res and res.text:
-                        return True, f"Kết nối Gemini thành công! (Model: {lm})", lm
-                except Exception:
-                    pass
-        except Exception:
-            pass
-
-        return False, f"Lỗi kết nối Gemini: {last_err}", None
+        # (Đã bỏ fallback google.generativeai: thư viện cũ gọi thẳng Google, vượt qua cổng AI công ty)
+        return False, f"Lỗi kết nối Cổng AI công ty (key Google): {last_err}", None
 
     elif provider.lower() == "openai":
         b_url = base_url or "https://api.openai.com/v1"
@@ -161,16 +561,22 @@ Xuất ra DUY NHẤT một khối JSON theo cấu trúc:
       "catch_period": "Thời gian chuyến biển (dd/mm/yyyy - dd/mm/yyyy)",
       "species": "Tên loài thủy sản (ví dụ: Cá ngừ vây vàng...)",
       "landing_date": "Ngày bốc dỡ / lên cá (dd/mm/yyyy)",
-      "total_catch_kg": 620.0,
-      "req_catch_kg": 489.0
+      "req_catch_kg": 489.0,
+      "total_catch_kg": 620.0
     }
-  ]
+  ],
+  "printed_total": {"req_catch_kg": "Số ở dòng TỔNG/TOTAL in trên giấy, cột KL nguyên liệu mua (null nếu trang không có dòng tổng)", "total_catch_kg": "Số ở dòng TỔNG/TOTAL, cột KL khai thác (null nếu không có)"}
 }
 
 QUY TẮC BẮT BUỘC ĐẢM BẢO CHÍNH XÁC 100%:
 1. Đọc đúng từng cột của từng dòng tàu trong bảng.
 2. Cột 'Thời hạn giấy phép đến' là ngày hết hạn của Giấy phép KTTS (thường là một ngày trong tương lai 2026-2030). KHÔNG ĐƯỢC lấy ngày bốc dỡ hay ngày chuyến biển đưa vào cột hạn phép!
-3. PHÂN BIỆT RÕ 2 CỘT KHỐI LƯỢNG TRONG GIẤY SC:
+3. HẠN GIẤY PHÉP (cột 7 "Số giấy phép khai thác - thời hạn đến"): ô ghi số GP dạng "154-1/2026/QNg-GPKTTS" rồi xuống dòng ngày hạn, thường có dấu nháy đứng trước ('11/04/2029).
+   licence_exp = NGÀY SAU DẤU NHÁY / ngày ở dòng cuối của ô. TUYỆT ĐỐI KHÔNG lấy năm nằm trong số giấy phép (2026 trong "154-1/2026/...") làm năm hết hạn.
+   PHÂN BIỆT RÕ 2 CỘT KHỐI LƯỢNG TRONG GIẤY SC - XÁC ĐỊNH THEO TIÊU ĐỀ CỘT, KHÔNG THEO THỨ TỰ LIỆT KÊ TRONG JSON:
+   - Trên Mẫu số 01 hiện hành: cột (11) "Tổng khối lượng nguyên liệu mua từ tàu cá (kg)" đứng TRƯỚC, cột (12) "Tổng khối lượng khai thác của tàu cá (kg)" đứng SAU.
+     => số ở cột (11) là req_catch_kg, số ở cột (12) là total_catch_kg. Mẫu khác có thể đổi vị trí: luôn đọc chữ ở tiêu đề cột.
+   - Kiểm tra lại: KL nguyên liệu mua KHÔNG BAO GIỜ lớn hơn KL khai thác của cùng dòng. Nếu thấy mua > khai thác thì bạn đang đọc đảo cột - đọc lại.
    - "total_catch_kg": Cột "Tổng khối lượng khai thác của tàu cá (kg)" (tổng sản lượng tàu đánh bắt).
    - "req_catch_kg": Cột "Tổng khối lượng nguyên liệu mua từ tàu cá (kg)" (số lượng nguyên liệu mua thực tế đưa vào hồ sơ XNNL).
    - QUY TẮC BẮT BUỘC VỀ DẤU GẠCH NGANG '-' HOẶC ĐỂ TRỐNG:
@@ -203,17 +609,23 @@ Xuất ra DUY NHẤT một khối JSON theo cấu trúc sau:
       "catch_period": "Thời gian chuyến biển (dd/mm/yyyy - dd/mm/yyyy)",
       "species": "Tên loài thủy sản (ví dụ: Cá ngừ vây vàng...)",
       "landing_date": "Ngày bốc dỡ / lên cá (dd/mm/yyyy)",
-      "total_catch_kg": 620.0,
-      "req_catch_kg": 489.0
+      "req_catch_kg": 489.0,
+      "total_catch_kg": 620.0
     }
-  ]
+  ],
+  "printed_total": {"req_catch_kg": "Số ở dòng TỔNG/TOTAL in trên giấy, cột KL nguyên liệu mua (null nếu trang không có dòng tổng)", "total_catch_kg": "Số ở dòng TỔNG/TOTAL, cột KL khai thác (null nếu không có)"}
 }
 
 QUY TẮC BẮT BUỘC ĐẢM BẢO CHÍNH XÁC 100%:
 1. ĐỌC ĐẦY ĐỦ TẤT CẢ CÁC TRANG: Duyệt toàn bộ tài liệu từ trang 1 đến trang cuối cùng, không bỏ sót bất kỳ dòng tàu nào.
 2. HƯỚNG QUÉT & GÓC NGHIÊNG: Tài liệu scan có thể bị xoay ngang (90°, 270°), xoay ngược (180°), hoặc bị scan nghiêng góc. Hãy tự động nhận diện chiều chữ, xoay đúng chiều để đọc chính xác tuyệt đối chữ và số.
 3. CỘT 'THỜI HẠN GIẤY PHÉP ĐẾN': Là ngày hết hạn của Giấy phép KTTS (thường là một ngày trong tương lai 2026-2030). KHÔNG ĐƯỢC nhầm với ngày bốc dỡ hay ngày chuyến biển.
-4. PHÂN BIỆT RÕ 2 CỘT KHỐI LƯỢNG TRONG GIẤY SC:
+4. HẠN GIẤY PHÉP (cột 7 "Số giấy phép khai thác - thời hạn đến"): ô ghi số GP dạng "154-1/2026/QNg-GPKTTS" rồi xuống dòng ngày hạn, thường có dấu nháy đứng trước ('11/04/2029).
+   licence_exp = NGÀY SAU DẤU NHÁY / ngày ở dòng cuối của ô. TUYỆT ĐỐI KHÔNG lấy năm nằm trong số giấy phép (2026 trong "154-1/2026/...") làm năm hết hạn.
+   PHÂN BIỆT RÕ 2 CỘT KHỐI LƯỢNG TRONG GIẤY SC - XÁC ĐỊNH THEO TIÊU ĐỀ CỘT, KHÔNG THEO THỨ TỰ LIỆT KÊ TRONG JSON:
+   - Trên Mẫu số 01 hiện hành: cột (11) "Tổng khối lượng nguyên liệu mua từ tàu cá (kg)" đứng TRƯỚC, cột (12) "Tổng khối lượng khai thác của tàu cá (kg)" đứng SAU.
+     => số ở cột (11) là req_catch_kg, số ở cột (12) là total_catch_kg. Mẫu khác có thể đổi vị trí: luôn đọc chữ ở tiêu đề cột.
+   - Kiểm tra lại: KL nguyên liệu mua KHÔNG BAO GIỜ lớn hơn KL khai thác của cùng dòng. Nếu thấy mua > khai thác thì bạn đang đọc đảo cột - đọc lại.
    - "total_catch_kg": Cột "Tổng khối lượng khai thác của tàu cá (kg)" (tổng sản lượng đánh bắt).
    - "req_catch_kg": Cột "Tổng khối lượng nguyên liệu mua từ tàu cá (kg)" (số lượng nguyên liệu mua đưa vào hồ sơ XNNL).
    - QUY TẮC BẮT BUỘC VỀ DẤU GẠCH NGANG '-' HOẶC ĐỂ TRỐNG:
@@ -233,10 +645,11 @@ def extract_sc_with_gemini(file_path, api_key, model="gemini-3.8-flash", progres
     from google import genai
     from google.genai import types
 
-    client = genai.Client(api_key=api_key)
+    from app_config_manager import tao_google_client
+    client = tao_google_client(api_key)
 
-    m_cur = model if (model and "3.8" not in model) else "gemini-2.5-flash"
-    candidate_models = [m_cur, "gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]
+    m_cur = model or "gemini-3.8-flash"
+    candidate_models = [m_cur, "gemini-3.8-flash", "gemini-2.5-flash", "gemini-2.0-flash"]
     seen = set()
     models_to_try = [m for m in candidate_models if m and not (m in seen or seen.add(m))]
 
@@ -323,7 +736,8 @@ def extract_sc_with_gemini(file_path, api_key, model="gemini-3.8-flash", progres
         "sc_number": sc_number or os.path.basename(file_path),
         "port_name": port_name or "",
         "issue_date": issue_date or "",
-        "records": all_vessels
+        "records": all_vessels,
+        "printed_total": data.get("printed_total")
     }
 
 def _extract_sc_gemini_page_by_page(file_path, client, models_to_try, progress_cb=None):
@@ -334,6 +748,7 @@ def _extract_sc_gemini_page_by_page(file_path, client, models_to_try, progress_c
     sc_number = None
     port_name = None
     issue_date = None
+    printed_total = None
 
     for pno in range(total_pages):
         pct = 0.2 + (pno / total_pages) * 0.7
@@ -379,12 +794,16 @@ def _extract_sc_gemini_page_by_page(file_path, client, models_to_try, progress_c
         if not sc_number and data.get("sc_number"): sc_number = data.get("sc_number")
         if not port_name and data.get("port_name"): port_name = data.get("port_name")
         if not issue_date and data.get("issue_date"): issue_date = data.get("issue_date")
+        pt = data.get("printed_total")
+        if isinstance(pt, dict) and any(pt.get(k) not in (None, "") for k in ("req_catch_kg", "total_catch_kg")):
+            printed_total = pt
 
         for v in data.get("vessels", []):
             v["page"] = pno + 1
             all_vessels.append(v)
 
     return {
+        "printed_total": printed_total,
         "sc_number": sc_number or os.path.basename(file_path),
         "port_name": port_name or "",
         "issue_date": issue_date or "",
@@ -455,14 +874,14 @@ def extract_sc_with_openai_compatible(file_path, api_key, model="gemini-3.8-flas
             try:
                 data = json.loads(m_json.group(1))
             except Exception:
-                pass
+                _ghi_loi_bo_qua()
         if not data:
             for fix in [']}', '}', '"]}', '0]}']:
                 try:
                     data = json.loads(raw_text + fix)
                     if data: break
                 except Exception:
-                    pass
+                    _ghi_loi_bo_qua()
 
     if isinstance(data, list):
         data = {"vessels": data}
@@ -486,7 +905,8 @@ def extract_sc_with_openai_compatible(file_path, api_key, model="gemini-3.8-flas
         "port_name": port_name or "",
         "issue_date": issue_date or "",
         "records": vessels,
-        "vessels": vessels
+        "vessels": vessels,
+        "printed_total": data.get("printed_total")
     }
 
 def extract_sc_with_openai(file_path, api_key, model="gpt-4o-mini", progress_cb=None):
@@ -507,9 +927,8 @@ def extract_sc_with_ai(file_path, provider=None, api_key=None, model=None, base_
         b_url = base_url or cfg.get("apiz_base_url", "https://api.apiz.vn/v1")
     elif provider.lower() == "gemini":
         key = api_key or cfg.get("gemini_api_key", "")
-        model_name = model or cfg.get("gemini_model", "gemini-2.5-flash")
-        if "3.8" in str(model_name):
-            model_name = "gemini-2.5-flash"
+        # KHÔNG ép xuống 2.5: cổng AI công ty chỉ whitelist gemini-3.8-flash
+        model_name = model or cfg.get("gemini_model") or "gemini-3.8-flash"
         b_url = None
     else:
         key = api_key or cfg.get("openai_api_key", "")
@@ -520,14 +939,17 @@ def extract_sc_with_ai(file_path, provider=None, api_key=None, model=None, base_
         raise ValueError(f"Chưa cấu hình API Key cho {provider.upper()}! Vui lòng nhập API Key trong phần Cấu hình AI.")
 
     # 1. Check cache
+    # Băm TOÀN BỘ file (không chỉ 64KB đầu): PDF ký số / sửa thêm thường chỉ đổi phần cuối file
     hasher = hashlib.md5()
     with open(file_path, 'rb') as f:
-        hasher.update(f.read(65536))
+        for khoi in iter(lambda: f.read(1 << 20), b""):
+            hasher.update(khoi)
     fhash = hasher.hexdigest()
     
     os.makedirs(cache_dir, exist_ok=True)
-    cache_meta = os.path.join(cache_dir, f"sc_ai_{fhash}.json")
-    
+    # v2 (11/2026): sửa lỗi đảo cột KL mua/khai thác -> KHÔNG dùng lại cache cũ (sc_ai_<hash>.json) đã đọc sai
+    cache_meta = os.path.join(cache_dir, f"sc_ai_{SC_CACHE_VER}_{fhash}.json")
+
     if os.path.exists(cache_meta):
         try:
             with open(cache_meta, "r", encoding="utf-8") as f:
@@ -537,7 +959,7 @@ def extract_sc_with_ai(file_path, provider=None, api_key=None, model=None, base_
                     if progress_cb: progress_cb(0.9, "Đang tải dữ liệu AI từ bộ nhớ đệm...")
                     return cached_data["sc_info"], cached_records
         except Exception:
-            pass
+            _ghi_loi_bo_qua()
 
     # 2. Call AI
     if provider.lower() == "apiz":
@@ -611,7 +1033,7 @@ def extract_sc_with_ai(file_path, provider=None, api_key=None, model=None, base_
             "page": r.get("page", 1),
             "vessel_id": v_id,
             "owner": str(r.get("owner", "")).strip(),
-            "gear": str(r.get("gear", "")).strip() or "LHP",
+            "gear": str(r.get("gear") or "").strip(),  # không tự điền "LHP" khi không đọc được
             "licence_no": str(r.get("licence_no", "")).strip(),
             "licence_exp": str(r.get("licence_exp", "")).strip(),
             "catch_area": str(r.get("catch_area", "")).strip(),
@@ -622,7 +1044,14 @@ def extract_sc_with_ai(file_path, provider=None, api_key=None, model=None, base_
             "req_catch_kg": req_kg
         })
 
+    if progress_cb: progress_cb(0.92, "Đang tự kiểm tra kết quả đọc (luật logic, sổ tàu, đọc lại ô nghi ngờ)...")
+    canh_bao = kiem_tra_sc_sau_khi_doc(
+        records, extracted.get("printed_total"), _parse_safe_float,
+        doc_lai=tao_ham_doc_lai(file_path, provider.lower(), key, model_name, b_url))
+
     sc_info = {
+        "canh_bao": canh_bao,
+        "printed_total": extracted.get("printed_total"),
         "sc_number": sc_number,
         "file_name": os.path.basename(file_path),
         "total_vessels": len(records),

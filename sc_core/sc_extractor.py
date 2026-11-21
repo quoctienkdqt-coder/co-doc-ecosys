@@ -1,3 +1,8 @@
+try:  # ghi lỗi bị bỏ qua vào loi_bo_qua.log (thay cho except: pass im lặng)
+    from nhat_ky_loi import ghi as _ghi_loi_bo_qua
+except Exception:  # pragma: no cover
+    def _ghi_loi_bo_qua(*_a, **_k):
+        return None
 import os
 os.environ.setdefault("OMP_NUM_THREADS", "2")
 os.environ.setdefault("ONNXRUNTIME_NUM_THREADS", "2")
@@ -57,7 +62,7 @@ def deskew_and_orient_image(pix):
         if success:
             return buf.tobytes()
     except Exception:
-        pass
+        _ghi_loi_bo_qua()
     return pix.tobytes("png")
 
 def get_file_hash(filepath):
@@ -110,12 +115,12 @@ def extract_sc_document(file_path, cache_dir="cache", progress_cb=None, use_ai=N
         raise FileNotFoundError(f"Không tìm thấy file: {file_path}")
 
     os.makedirs(cache_dir, exist_ok=True)
+    # Mã băm TOÀN BỘ file (trước đây chỉ 64KB đầu -> PDF sửa/ký số thêm ở cuối file bị dùng lại kết quả đọc cũ)
     fhash = get_file_hash(file_path)
-    with open(file_path, 'rb') as _f64:
-        fhash_64k = hashlib.md5(_f64.read(65536)).hexdigest()
 
     # Ưu tiên tuyệt đối kiểm tra bộ nhớ đệm AI (có đầy đủ dấu tiếng Việt)
-    for cand_ai_cache in [os.path.join(cache_dir, f"sc_ai_{fhash_64k}.json"), os.path.join(cache_dir, f"sc_ai_{fhash}.json")]:
+    from sc_core.ai_extractor import SC_CACHE_VER
+    for cand_ai_cache in [os.path.join(cache_dir, f"sc_ai_{SC_CACHE_VER}_{fhash}.json")]:
         if os.path.exists(cand_ai_cache):
             try:
                 with open(cand_ai_cache, "r", encoding="utf-8") as f:
@@ -124,7 +129,7 @@ def extract_sc_document(file_path, cache_dir="cache", progress_cb=None, use_ai=N
                         if progress_cb: progress_cb(0.95, "Đang tải dữ liệu AI (có dấu) từ bộ nhớ đệm...")
                         return cached_ai["sc_info"], cached_ai["records"]
             except Exception:
-                pass
+                _ghi_loi_bo_qua()
 
     # 1. Check AI mode configuration
     cfg = load_ai_config()
@@ -147,20 +152,25 @@ def extract_sc_document(file_path, cache_dir="cache", progress_cb=None, use_ai=N
                 elif key:
                     ai_provider = "gemini"
             except Exception:
-                pass
+                _ghi_loi_bo_qua()
     else:
         key = api_key
 
     if should_use_ai and key and key.strip():
         try:
-            return extract_sc_with_ai(file_path, provider=ai_provider, api_key=key.strip(), cache_dir=cache_dir, progress_cb=progress_cb)
+            sc_info_ai, recs_ai = extract_sc_with_ai(file_path, provider=ai_provider, api_key=key.strip(), cache_dir=cache_dir, progress_cb=progress_cb)
+            if progress_cb:
+                for cb in (sc_info_ai or {}).get("canh_bao") or []:
+                    progress_cb(0.97, f"⚠ {os.path.basename(file_path)}: {cb}")
+            return sc_info_ai, recs_ai
         except Exception as e:
             err_msg = f"AI Vision ({ai_provider}) gặp sự cố: {e}. Tự động chuyển sang quét OCR Cục bộ..."
             print(err_msg)
             if progress_cb: progress_cb(0.1, err_msg)
 
-    # 2. Local RapidOCR mode (Offline Fallback)
-    cache_meta = os.path.join(cache_dir, f"sc_{fhash}.json")
+    # 2. Local RapidOCR mode (Offline Fallback) — KÉM CHÍNH XÁC: mọi dòng đều gắn cờ "Cần xem"
+    #    (tên cache mới: cache OCR cũ có thể chứa số SC bịa "00180/2026/SC-GL-TQ")
+    cache_meta = os.path.join(cache_dir, f"sc_ocr_v2_{fhash}.json")
     
     if os.path.exists(cache_meta):
         if progress_cb: progress_cb(0.9, "Đang tải dữ liệu SC từ bộ nhớ đệm...")
@@ -216,11 +226,9 @@ def extract_sc_document(file_path, cache_dir="cache", progress_cb=None, use_ai=N
             else:
                 sc_number = f"{num_prefix}/{yr}/SC-{suffix_part}"
                 
-    if not sc_number and p1_boxes:
-        for b in p1_boxes:
-            if "00180" in b['text']:
-                sc_number = "00180/2026/SC-GL-TQ"
-                break
+    # KHÔNG BAO GIỜ tự bịa số SC (trước đây gán cứng "00180/2026/SC-GL-TQ")
+    if not sc_number:
+        sc_number = f"CHƯA ĐỌC ĐƯỢC SỐ SC ({os.path.basename(file_path)})"
 
     # Parse rows across all pages that contain vessels
     records = []
@@ -371,7 +379,9 @@ def extract_sc_document(file_path, cache_dir="cache", progress_cb=None, use_ai=N
                 req_catch = total_catch
             
             records.append({
-                'sc_number': sc_number or "00180/2026/SC-GL-TQ",
+                'nghi_ngo': ["Đọc bằng OCR dự phòng (AI không gọi được) — số liệu có thể sai, đối chiếu ảnh SC"],
+                'o_nghi_ngo': ['req_catch_kg'],
+                'sc_number': sc_number,
                 'page': pno + 1,
                 'vessel_id': vb['text'],
                 'owner': owner,
@@ -387,7 +397,10 @@ def extract_sc_document(file_path, cache_dir="cache", progress_cb=None, use_ai=N
             })
 
     sc_info = {
-        'sc_number': sc_number or "00180/2026/SC-GL-TQ",
+        'sc_number': sc_number,
+        'extractor': 'OCR dự phòng (kém chính xác)',
+        'canh_bao': [f"SC {os.path.basename(file_path)} đọc bằng OCR dự phòng vì AI không gọi được — "
+                     "toàn bộ số liệu cần người xem (kiểm tra mạng / API key rồi chạy lại để đọc bằng AI)"],
         'file_name': os.path.basename(file_path),
         'total_vessels': len(records),
         'total_catch_kg': sum(r['total_catch_kg'] for r in records)
@@ -397,7 +410,10 @@ def extract_sc_document(file_path, cache_dir="cache", progress_cb=None, use_ai=N
     with open(cache_meta, "w", encoding="utf-8") as f:
         json.dump({"sc_info": sc_info, "records": records}, f, ensure_ascii=False, indent=2)
 
-    if progress_cb: progress_cb(1.0, f"Bóc tách SC thành công ({len(records)} tàu cá)!")
+    if progress_cb:
+        progress_cb(1.0, f"Bóc tách SC bằng OCR dự phòng ({len(records)} tàu cá)")
+        for cb in sc_info['canh_bao']:
+            progress_cb(1.0, f"⚠ {cb}")
     return sc_info, records
 
 def normalize_sc_code(s, filename=""):

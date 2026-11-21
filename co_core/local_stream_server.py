@@ -4,6 +4,11 @@ Local Companion Stream Bridge - Bảo mật & Xác thực phiên ngẫu nhiên (
 - Kiểm tra Origin: Chỉ cho phép Chrome Extension và cổng eCoSys (co.moit.gov.vn)
 - Yêu cầu Session Token mật mã ngẫu nhiên cho mọi request lấy tệp
 """
+try:  # ghi lỗi bị bỏ qua vào loi_bo_qua.log (thay cho except: pass im lặng)
+    from nhat_ky_loi import ghi as _ghi_loi_bo_qua
+except Exception:  # pragma: no cover
+    def _ghi_loi_bo_qua(*_a, **_k):
+        return None
 import http.server
 import socketserver
 import threading
@@ -249,7 +254,7 @@ def start_local_stream_server():
             SERVER_THREAD.start()
             return PORT
         except Exception:
-            pass
+            _ghi_loi_bo_qua()
 
     return None
 
@@ -265,10 +270,10 @@ def stop_local_stream_server():
                     srv.shutdown()
                     srv.server_close()
                 except Exception:
-                    pass
+                    _ghi_loi_bo_qua()
             t = threading.Thread(target=_close, daemon=True)
             t.start()
             t.join(timeout=0.8)
         except Exception:
-            pass
+            _ghi_loi_bo_qua()
         CURRENT_SERVER = None

@@ -12,6 +12,11 @@ hóa đơn + giấy cam kết + bảng kê mua hàng...).
 2. read_invoice_pages_with_ai(): chỉ gửi AI các trang hóa đơn (song song, có cache theo nội dung ảnh trang
    -> chạy lại không tốn API).
 """
+try:  # ghi lỗi bị bỏ qua vào loi_bo_qua.log (thay cho except: pass im lặng)
+    from nhat_ky_loi import ghi as _ghi_loi_bo_qua
+except Exception:  # pragma: no cover
+    def _ghi_loi_bo_qua(*_a, **_k):
+        return None
 import os
 import re
 import json
@@ -114,9 +119,8 @@ def _resolve_ai(provider=None, api_key=None, model=None, base_url=None):
         base_url = base_url or cfg.get("apiz_base_url", "https://api.apiz.vn/v1")
     elif provider == "gemini":
         key = api_key or cfg.get("gemini_api_key", "")
-        model = model or cfg.get("gemini_model", "gemini-2.5-flash")
-        if "3.8" in str(model):
-            model = "gemini-2.5-flash"
+        # KHÔNG ép xuống 2.5: cổng AI công ty chỉ whitelist gemini-3.8-flash
+        model = model or cfg.get("gemini_model") or "gemini-3.8-flash"
         base_url = None
     else:
         key = api_key or cfg.get("openai_api_key", "")
@@ -148,11 +152,12 @@ def _ask_vision(img_bytes, provider, key, model, base_url):
     if provider == "gemini":
         from google import genai
         from google.genai import types
-        client = genai.Client(api_key=key)
+        from app_config_manager import tao_google_client
+        client = tao_google_client(key)
         part = types.Part.from_bytes(data=img_bytes, mime_type="image/jpeg")
         cfg = types.GenerateContentConfig(response_mime_type="application/json", temperature=0.0)
         last = None
-        for m in [model, "gemini-2.5-flash", "gemini-2.0-flash"]:
+        for m in dict.fromkeys([model, "gemini-3.8-flash", "gemini-2.5-flash"]):
             try:
                 resp = client.models.generate_content(model=m, contents=[part, INVOICE_PROMPT], config=cfg)
                 if resp and resp.text:
@@ -257,7 +262,7 @@ def read_invoice_pages_with_ai(pdf_path, provider=None, api_key=None, model=None
                 with open(cache_f, "r", encoding="utf-8") as f:
                     return p, json.load(f), True, None
             except Exception:
-                pass
+                _ghi_loi_bo_qua()
         err = None
         for _ in range(2):  # thử lại 1 lần nếu lỗi mạng / JSON hỏng
             try:

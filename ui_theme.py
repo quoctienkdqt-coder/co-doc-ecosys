@@ -7,6 +7,11 @@ BỘ GIAO DIỆN DÙNG CHUNG (DESIGN SYSTEM) CHO TOÀN BỘ ỨNG DỤNG
 - Hiệu ứng mượt:       FadeStackedWidget (chuyển trang mờ dần), animate_width (thu/mở sidebar),
                        smooth_item_views (cuộn bảng theo pixel).
 """
+try:  # ghi lỗi bị bỏ qua vào loi_bo_qua.log (thay cho except: pass im lặng)
+    from nhat_ky_loi import ghi as _ghi_loi_bo_qua
+except Exception:  # pragma: no cover
+    def _ghi_loi_bo_qua(*_a, **_k):
+        return None
 from PyQt6.QtCore import Qt, QEasingCurve, QPropertyAnimation, QVariantAnimation, QAbstractAnimation
 from PyQt6.QtGui import QFont, QColor, QPalette
 from PyQt6.QtWidgets import (
@@ -16,18 +21,40 @@ from PyQt6.QtWidgets import (
 )
 
 # ------------------------------------------------------------------ BẢNG MÀU
+# Hệ thiết kế "Hải trình" (v3.4): navy + cobalt, 3 màu trạng thái khác nhau cả độ sáng lẫn ký hiệu (✓ ? ×)
 C = {
-    "bg": "#F3F5F9", "surface": "#FFFFFF", "surface_2": "#F8FAFC",
-    "border": "#E2E8F0", "border_strong": "#CBD5E1",
-    "text": "#0F172A", "text_2": "#475569", "muted": "#94A3B8",
-    "primary": "#2563EB", "primary_hover": "#1D4ED8", "primary_press": "#1E40AF", "primary_soft": "#EFF6FF",
-    "success": "#16A34A", "success_hover": "#15803D", "success_soft": "#F0FDF4",
-    "warning": "#D97706", "warning_soft": "#FFFBEB",
-    "danger": "#DC2626", "danger_soft": "#FEF2F2",
-    "side_bg": "#0B1220", "side_hover": "#16213A", "side_text": "#A8B3C7", "side_active": "#1E3A8A",
+    "bg": "#F3F5F8", "surface": "#FFFFFF", "surface_2": "#F7F9FC",
+    "border": "#E4E9F0", "border_strong": "#D3DAE4",
+    "text": "#0B1A2E", "text_2": "#475569", "muted": "#7A8799",
+    "primary": "#1F5FD6", "primary_hover": "#174AA8", "primary_press": "#123C8A", "primary_soft": "#EAF1FE",
+    "success": "#15803D", "success_hover": "#166534", "success_soft": "#E8F6EE",
+    "warning": "#B45309", "warning_soft": "#FEF4E2",
+    "danger": "#C2261F", "danger_soft": "#FDECEC",
+    "side_bg": "#0A1628", "side_bg_2": "#0D2140", "side_hover": "#13284A", "side_text": "#B6C3D6",
+    "side_active": "#1F5FD6",
 }
 
-FONT_FAMILY = "Segoe UI"
+FONT_FAMILY = "Segoe UI"          # đổi thành "Be Vietnam Pro" khi nạp được font đi kèm (assets/fonts)
+FONT_FALLBACK = "Segoe UI"
+
+
+def _nap_font():
+    """Nạp Be Vietnam Pro (font thiết kế cho tiếng Việt, giấy phép OFL) từ assets/fonts. Trả tên họ font."""
+    import os
+    from PyQt6.QtGui import QFontDatabase
+    goc = os.path.dirname(os.path.abspath(__file__))
+    for thu_muc in (os.path.join(goc, "assets", "fonts"), os.path.join(goc, "_internal", "assets", "fonts")):
+        if not os.path.isdir(thu_muc):
+            continue
+        ho = None
+        for f in sorted(os.listdir(thu_muc)):
+            if f.lower().endswith((".ttf", ".otf")):
+                fid = QFontDatabase.addApplicationFont(os.path.join(thu_muc, f))
+                if fid >= 0 and QFontDatabase.applicationFontFamilies(fid):
+                    ho = ho or QFontDatabase.applicationFontFamilies(fid)[0]
+        if ho:
+            return ho
+    return None
 _ICONS = {}
 
 
@@ -87,9 +114,21 @@ QLabel#Badge {{
 }}
 
 /* ================= THẺ (CARD) ================= */
-QFrame#Card {{ background: {c['surface']}; border: 1px solid {c['border']}; border-radius: 12px; }}
+QFrame#Card {{ background: {c['surface']}; border: 1px solid {c['border']}; border-radius: 14px; }}
 QFrame#Inset {{ background: {c['surface_2']}; border: 1px solid {c['border']}; border-radius: 10px; }}
-QFrame#KpiCard {{ background: {c['surface']}; border: 1px solid {c['border']}; border-radius: 12px; }}
+QFrame#KpiCard {{ background: {c['surface']}; border: 1px solid {c['border']}; border-radius: 14px; }}
+QFrame#KpiCard[tone="ok"] {{ background: #FFFFFF; border: 1px solid #CBE9D6; }}
+QFrame#KpiCard[tone="xem"] {{ background: #FFFBF3; border: 1px solid #F6DDB4; }}
+QFrame#KpiCard[tone="lech"] {{ background: #FFF7F6; border: 1px solid #F5C9C6; }}
+QFrame#HeroCard {{
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #EAF1FE, stop:0.7 #FFFFFF);
+    border: none; border-bottom: 1px solid {c['border']}; border-top-left-radius: 16px; border-top-right-radius: 16px;
+}}
+QFrame#OpenLot {{ background: {c['surface']}; border: 1px solid {c['border']}; border-radius: 16px; }}
+QFrame#DocTile {{ background: transparent; border: none; border-right: 1px solid #EEF2F6; }}
+QLabel#Eyebrow {{ font-size: 11.5px; font-weight: 700; color: {c['primary']}; letter-spacing: 1px; }}
+QLabel#BigNumber {{ font-size: 24px; font-weight: 800; color: {c['text']}; }}
+QLabel#HeroTitle {{ font-size: 20px; font-weight: 700; color: {c['text']}; }}
 QFrame#KpiAccent {{ border-radius: 2px; }}
 
 QGroupBox {{
@@ -123,7 +162,7 @@ QComboBox QAbstractItemView {{
 /* ================= NÚT ================= */
 QPushButton {{
     background: {c['surface']}; color: {c['text']}; border: 1px solid {c['border_strong']};
-    border-radius: 8px; padding: 6px 14px; min-height: 22px; font-weight: 600;
+    border-radius: 10px; padding: 7px 15px; min-height: 22px; font-weight: 600;
 }}
 QPushButton:hover {{ background: {c['surface_2']}; border-color: {c['muted']}; }}
 QPushButton:pressed {{ background: {c['border']}; }}
@@ -178,6 +217,11 @@ QPushButton[variant="chip"][state="on"] {{
 }}
 QPushButton[variant="chip"][state="on"]:hover {{ border-color: {c['success']}; }}
 QPushButton[variant="chip"][state="off"] {{ border-style: dashed; border-color: {c['border_strong']}; }}
+QPushButton[variant="chip"]:checked {{
+    background: {c['text']}; color: #FFFFFF; border: 1px solid {c['text']}; font-weight: 600;
+}}
+QPushButton[variant="chip"]:checked:hover {{ background: #1B2B44; color: #FFFFFF; }}
+QPushButton[size="xl"] {{ padding: 11px 22px; font-size: 14px; border-radius: 12px; font-weight: 700; }}
 
 /* ================= CHECKBOX ================= */
 QCheckBox {{ spacing: 7px; color: {c['text']}; }}
@@ -206,7 +250,7 @@ QTabBar::tab {{
     border: none; border-bottom: 2px solid transparent; font-weight: 600;
 }}
 QTabBar::tab:hover {{ color: {c['text']}; border-bottom: 2px solid {c['border_strong']}; }}
-QTabBar::tab:selected {{ color: {c['primary']}; border-bottom: 2px solid {c['primary']}; }}
+QTabBar::tab:selected {{ color: {c['primary']}; border-bottom: 2px solid {c['primary']}; font-weight: 700; }}
 QTabBar::scroller {{ width: 26px; }}
 QTabBar QToolButton {{ background: {c['bg']}; border: none; border-radius: 6px; }}
 
@@ -218,9 +262,9 @@ QTableWidget, QTableView, QTreeView, QListWidget, QListView {{
 }}
 QHeaderView {{ background: transparent; border: none; }}
 QHeaderView::section {{
-    background: {c['surface_2']}; color: {c['text_2']}; font-weight: 600; font-size: 12px;
-    border: none; border-bottom: 1px solid {c['border']}; border-right: 1px solid {c['border']};
-    padding: 6px 5px;
+    background: {c['surface_2']}; color: {c['text_2']}; font-weight: 700; font-size: 11.5px;
+    border: none; border-bottom: 1px solid {c['border']}; border-right: 1px solid #EEF2F6;
+    padding: 8px 6px;
 }}
 QTableCornerButton::section {{ background: {c['surface_2']}; border: none; }}
 
@@ -253,27 +297,31 @@ QTextEdit#LogView {{
 }}
 
 /* ================= SIDEBAR ================= */
-QFrame#Sidebar {{ background: {c['side_bg']}; border: none; }}
+QFrame#Sidebar {{
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 {c['side_bg']}, stop:1 {c['side_bg_2']}); border: none;
+}}
 QFrame#Sidebar QLabel {{ color: #E2E8F0; }}
 QLabel#SideLogo {{
-    background: {c['primary']}; color: #FFFFFF; border-radius: 10px; font-size: 18px;
-    min-width: 38px; max-width: 38px; min-height: 38px; max-height: 38px;
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #3B7BF0, stop:1 {c['primary']});
+    color: #FFFFFF; border-radius: 12px; font-size: 18px;
+    min-width: 40px; max-width: 40px; min-height: 40px; max-height: 40px;
 }}
-QLabel#SideTitle {{ font-size: 14px; font-weight: 700; color: #F8FAFC; }}
-QLabel#SideSub {{ font-size: 11px; color: #64748B; }}
-QLabel#SideSection {{ font-size: 10.5px; font-weight: 700; color: #475569; padding-left: 10px; }}
-QLabel#SideVersion {{ font-size: 10.5px; color: #475569; padding-left: 6px; }}
-QFrame#SideDivider {{ background: #1E293B; max-height: 1px; min-height: 1px; border: none; }}
+QLabel#SideTitle {{ font-size: 14.5px; font-weight: 700; color: #FFFFFF; }}
+QLabel#SideSub {{ font-size: 11.5px; color: #7F93B3; }}
+QLabel#SideSection {{ font-size: 10.5px; font-weight: 700; color: #6F84A6; padding-left: 12px; letter-spacing: 1px; }}
+QLabel#SideVersion {{ font-size: 10.5px; color: #5E7395; padding-left: 8px; }}
+QLabel#SideStatus {{ font-size: 11.5px; color: #8EA3C2; padding-left: 8px; }}
+QFrame#SideDivider {{ background: #1C3152; max-height: 1px; min-height: 1px; border: none; }}
 QPushButton#NavButton {{
     background: transparent; color: {c['side_text']}; border: none; border-radius: 10px;
-    text-align: left; padding: 0 12px; font-size: 13px; font-weight: 500;
+    text-align: left; padding: 0 12px; font-size: 13.5px; font-weight: 500;
     min-height: 42px; max-height: 42px;
 }}
 QPushButton#NavButton:hover {{ background: {c['side_hover']}; color: #FFFFFF; }}
-QPushButton#NavButton:checked {{ background: {c['primary']}; color: #FFFFFF; font-weight: 600; }}
+QPushButton#NavButton:checked {{ background: {c['side_active']}; color: #FFFFFF; font-weight: 600; }}
 QPushButton#NavButton[collapsed="true"] {{ text-align: center; padding: 0; font-size: 16px; }}
 QPushButton#SideToggle {{
-    background: transparent; color: {c['side_text']}; border: 1px solid #1E293B; border-radius: 8px;
+    background: transparent; color: {c['side_text']}; border: 1px solid #1C3152; border-radius: 9px;
     padding: 0; font-size: 15px; min-height: 34px; max-height: 34px; min-width: 34px; max-width: 34px;
 }}
 QPushButton#SideToggle:hover {{ background: {c['side_hover']}; color: #FFFFFF; }}
@@ -282,8 +330,16 @@ QPushButton#SideToggle:hover {{ background: {c['side_hover']}; color: #FFFFFF; }
 
 def apply_app_theme(app: QApplication):
     """Gọi 1 lần ngay sau khi tạo QApplication."""
+    global FONT_FAMILY
     app.setStyle("Fusion")
+    try:
+        ho = _nap_font()
+        if ho:
+            FONT_FAMILY = ho
+    except Exception:
+        _ghi_loi_bo_qua()
     f = QFont(FONT_FAMILY, 10)
+    f.setStyleStrategy(QFont.StyleStrategy.PreferAntialias)
     f.setHintingPreference(QFont.HintingPreference.PreferNoHinting)
     app.setFont(f)
     pal = app.palette()
@@ -300,7 +356,7 @@ def apply_app_theme(app: QApplication):
     try:
         _make_icons()
     except Exception:
-        pass
+        _ghi_loi_bo_qua()
     app.setStyleSheet(_qss())
 
 
@@ -309,7 +365,7 @@ def setup_high_dpi():
     try:
         QApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
     except Exception:
-        pass
+        _ghi_loi_bo_qua()
 
 
 # ------------------------------------------------------------------ HELPERS
@@ -383,7 +439,7 @@ def smooth_item_views(root: QWidget):
             v.verticalScrollBar().setSingleStep(18)
             v.horizontalScrollBar().setSingleStep(24)
         except Exception:
-            pass
+            _ghi_loi_bo_qua()
 
 
 def _fix_amp(text: str) -> str:

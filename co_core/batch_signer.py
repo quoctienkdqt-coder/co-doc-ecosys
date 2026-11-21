@@ -8,6 +8,11 @@ Hỗ trợ:
 5. Kích hoạt cơ chế 'Bypass 0 giây' cho Chrome Extension
 """
 
+try:  # ghi lỗi bị bỏ qua vào loi_bo_qua.log (thay cho except: pass im lặng)
+    from nhat_ky_loi import ghi as _ghi_loi_bo_qua
+except Exception:  # pragma: no cover
+    def _ghi_loi_bo_qua(*_a, **_k):
+        return None
 import os
 import sys
 import json
@@ -61,7 +66,7 @@ def is_pdf_signed(pdf_input) -> bool:
         if b"/ByteRange" in raw_bytes and (b"/Contents" in raw_bytes or b"/adbe.pkcs7" in raw_bytes):
             return True
     except Exception:
-        pass
+        _ghi_loi_bo_qua()
     return False
 
 
@@ -231,7 +236,7 @@ def sign_pdf_with_token(pdf_path: str, output_path: str = None, cert_thumbprint:
                     f_out.write(base64.b64decode(signed_b64))
                 return True, f"Ký số thành công qua MOITSignPlugin: {output_path}"
         except Exception:
-            pass
+            _ghi_loi_bo_qua()
 
     # 2. Kiểm tra token đang cắm
     active_token = get_active_token_certificate()

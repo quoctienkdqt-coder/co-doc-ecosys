@@ -5,6 +5,11 @@ Bản quyền © 2026. Mọi quyền được bảo lưu.
 Khuyến cáo AI: AI chỉ mang tính tham khảo, mọi quyết định và kết quả đều do con người.
 """
 
+try:  # ghi lỗi bị bỏ qua vào loi_bo_qua.log (thay cho except: pass im lặng)
+    from nhat_ky_loi import ghi as _ghi_loi_bo_qua
+except Exception:  # pragma: no cover
+    def _ghi_loi_bo_qua(*_a, **_k):
+        return None
 import os
 import sys
 import json
@@ -21,6 +26,35 @@ from PyQt6.QtWidgets import (
     QLineEdit, QTextBrowser, QProgressBar, QMessageBox, QFrame
 )
 from PyQt6.QtGui import QFont, QIcon
+
+
+# ------------------------------------------------------------------ CHỮ KÝ BỘ CÀI (Ed25519)
+# Khóa CÔNG KHAI (chỉ dùng để kiểm tra). Khóa bí mật nằm riêng trên máy phát hành (~/.co_doc_keys), KHÔNG có trên
+# GitHub -> kể cả khi tài khoản GitHub bị chiếm, kẻ gian không ký được bộ cài giả, máy khách sẽ từ chối cài.
+CAP_NHAT_PUBLIC_KEY_B64 = "SYJPpKe2/qALSSTDrj4OUJmJZtUJxV5QF7Ark1IDWeM="
+TIEN_TO_CHU_KY = b"co-doc-ecosys-update:sha256:"
+
+
+def sha256_file(path: str) -> str:
+    import hashlib
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for khoi in iter(lambda: f.read(1 << 20), b""):
+            h.update(khoi)
+    return h.hexdigest()
+
+
+def kiem_tra_chu_ky(path_exe: str, chu_ky_b64: str) -> bool:
+    """Chữ ký = Ed25519( TIEN_TO_CHU_KY + sha256_hex(bộ cài) ). Trả True chỉ khi hợp lệ."""
+    import base64
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+    from cryptography.exceptions import InvalidSignature
+    try:
+        pub = Ed25519PublicKey.from_public_bytes(base64.b64decode(CAP_NHAT_PUBLIC_KEY_B64))
+        pub.verify(base64.b64decode(chu_ky_b64.strip()), TIEN_TO_CHU_KY + sha256_file(path_exe).encode())
+        return True
+    except (InvalidSignature, ValueError):
+        return False
 
 
 def get_app_dir() -> str:
@@ -65,7 +99,7 @@ def get_local_version_info() -> Dict[str, Any]:
                 if best is None or version_tuple(data.get("version")) > version_tuple(best.get("version")):
                     best = data
             except Exception:
-                pass
+                _ghi_loi_bo_qua()
     if best:
         return best
     return {
@@ -119,20 +153,27 @@ class UpdateCheckerWorker(QThread):
                     if response.status == 200:
                         rel_data = json.loads(response.read().decode("utf-8"))
                         tag = rel_data.get("tag_name", "").lstrip("v")
-                        # Tìm asset có đuôi .exe (ví dụ CaiDat_XNK_eCoSys_SC.exe)
-                        for asset in rel_data.get("assets", []):
+                        # Tìm asset bộ cài .exe + file chữ ký <tên>.exe.sig đi kèm
+                        assets = rel_data.get("assets", [])
+                        for asset in assets:
                             if asset.get("name", "").endswith(".exe"):
                                 exe_download_url = asset.get("browser_download_url")
                                 break
+                        sig_url = None
+                        if exe_download_url:
+                            ten_sig = os.path.basename(exe_download_url) + ".sig"
+                            sig_url = next((a.get("browser_download_url") for a in assets
+                                            if a.get("name") == ten_sig), None)
 
                         remote_data = {
                             "version": tag or "3.1.0",
                             "changelog": [rel_data.get("body", "Bản cập nhật mới trên GitHub")],
                             "published_at": rel_data.get("published_at", ""),
-                            "exe_url": exe_download_url
+                            "exe_url": exe_download_url,
+                            "sig_url": sig_url,
                         }
             except Exception:
-                pass
+                _ghi_loi_bo_qua()
 
             # Cách 2: Thử đọc trực tiếp version.json từ nhánh main/master
             if not remote_data:
@@ -204,6 +245,24 @@ class UpdateApplyWorker(QThread):
                     magic = check_f.read(2)
                     if magic != b'MZ':
                         raise ValueError("Tệp tải về không phải định dạng thực thi PE Windows an toàn!")
+
+                # BẮT BUỘC: chữ ký số của người phát hành (Ed25519). Không có / sai chữ ký -> KHÔNG chạy bộ cài.
+                self.progress_signal.emit(80, "Đang kiểm tra chữ ký số của bộ cài...")
+                sig_url = self.remote_info.get("sig_url")
+                chu_ky = ""
+                if sig_url:
+                    req_sig = urllib.request.Request(sig_url, headers={"User-Agent": "Mozilla/5.0"})
+                    with urllib.request.urlopen(req_sig, timeout=30) as r:
+                        chu_ky = r.read(4096).decode("ascii", "ignore")
+                if not chu_ky or not kiem_tra_chu_ky(dest_installer, chu_ky):
+                    try:
+                        os.remove(dest_installer)
+                    except Exception:
+                        _ghi_loi_bo_qua()
+                    raise ValueError(
+                        "Bộ cài tải về KHÔNG có chữ ký số hợp lệ của người phát hành — đã HỦY cập nhật để bảo vệ máy.\n"
+                        "Vui lòng liên hệ tác giả (Zalo 0905387808) để nhận bộ cài chính thức.")
+                self.progress_signal.emit(85, "Chữ ký số hợp lệ ✓")
 
                 self.progress_signal.emit(90, "Đang khởi chạy trình cài đặt mới...")
                 # Truyền thư mục đang cài để bộ cài GHI ĐÈ đúng chỗ; chạy an toàn KHÔNG dùng shell=True
@@ -348,7 +407,7 @@ class UpdateApplyWorker(QThread):
                     try:
                         os.remove(temp_zip)
                     except Exception:
-                        pass
+                        _ghi_loi_bo_qua()
 
             self.progress_signal.emit(100, "Cập nhật thành công 100%!")
             self.finished_signal.emit(
